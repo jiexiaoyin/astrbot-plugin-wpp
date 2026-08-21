@@ -141,6 +141,35 @@ class WppClient:
         except aiohttp.ClientError as e:
             return {"Code": -3, "Success": False, "Message": f"网络错误: {e}"}
 
+    # ------------------------------------------------------------------ 文件下载
+    async def download_file_binary(self, attach_id: str, user_name: str, data_len: int) -> bytes | None:
+        """POST /api/Tools/DownloadFileBinary — 完整下载 v1 文件 (原始字节流, 非 base64)。
+
+        参考 wpp-openclaw file.ts (v1.2.5 FILE-DOWNLOAD-BINARY):
+          authcode 走 query, TokenKey 走 header, body {attach_id, user_name, data_len, section}
+        返回原始文件 bytes; 失败返回 None。
+        """
+        session = await self._session_acquire()
+        url = self._url("/Tools/DownloadFileBinary")
+        headers = self._headers()
+        headers["TokenKey"] = self.auth_token
+        body: dict = {
+            "attach_id": attach_id,
+            "user_name": user_name,
+            "data_len": data_len,
+            "section": {"start_pos": 0, "data_len": data_len},
+        }
+        try:
+            async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                if resp.status != 200:
+                    return None
+                buf = await resp.read()
+                if len(buf) < 10:
+                    return None
+                return buf
+        except Exception:  # noqa: BLE001
+            return None
+
     # ------------------------------------------------------------------ 图片下载
     async def download_image_cdn(self, file_aes_key: str, file_no: str) -> bytes | None:
         """POST /api/Tools/CdnDownloadImage — 通过 CDN 下载完整大图 (v1.2.5 首选路径)。

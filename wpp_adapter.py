@@ -318,10 +318,14 @@ class WppPlatformAdapter(Platform):
             logger.warning(f"[WPP] bad webhook payload: {e}")
             return web.Response(status=200)  # 200 防 vendor 重试轰炸
 
+        # 遍历所有消息 (vendor 一次可能推多条, 只取第一条会漏文件/图片等)
+        for src in self._extract_all_msg_src(payload):
+            await self._process_src(src)
+        return web.Response(status=200)
+
+    async def _process_src(self, src: dict) -> None:
+        """处理单条消息: 白名单过滤 → 转换 → 媒体下载 → 提交事件。"""
         # 白名单 + 群@ 过滤 (兼容 v1 sender_id/is_group/conversation_id)
-        src = self._extract_msg_src(payload)
-        if src is None:
-            return web.Response(status=200)
         from_wxid = _safe_str(src.get("fromUser") or src.get("fromWxid") or src.get("FromWxid") or src.get("sender_id"))
         chatroom_id = _safe_str(src.get("chatroomId") or src.get("ChatroomId"))
         v1_is_group = src.get("is_group")
@@ -332,15 +336,15 @@ class WppPlatformAdapter(Platform):
         # v1: 只处理 incoming; 忽略公众号 (gh_)
         direction = _safe_str(src.get("direction"))
         if direction and direction not in ("incoming", "1"):
-            return web.Response(status=200)
+            return
         if from_wxid.startswith("gh_"):
-            return web.Response(status=200)
+            return
 
         if not self._is_allowed(from_wxid, is_group, chatroom_id, content):
             logger.debug(f"[WPP] 消息被白名单/群策略过滤: from={from_wxid} group={chatroom_id or '-'}")
-            return web.Response(status=200)
+            return
 
-        msg = self._to_astrbot_message(payload)
+        msg = self._to_astrbot_message_src(src)
         if msg:
             # 图片消息: 异步下载 → 注入 Image 组件 → 再提交
             img_meta = getattr(msg, "_wpp_image_meta", None)
@@ -374,8 +378,35 @@ class WppPlatformAdapter(Platform):
                         logger.warning(f"[WPP] image download failed: {img_meta}")
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"[WPP] image download error: {e}")
+
+            # 文件消息: 下载 → 注入 File 组件 → 再提交
+            file_meta = getattr(msg, "_wpp_file_meta", None)
+            if file_meta:
+                try:
+                    attach_id = file_meta.get("attach_id", "")
+                    if attach_id:
+                        file_bytes = await self._api.download_file_binary(
+                            attach_id,
+                            file_meta.get("user_name", ""),
+                            file_meta.get("data_len", 0),
+                        )
+                        if file_bytes:
+                            from astrbot.api.message_components import File
+                            fname = file_meta.get("filename", "file")
+                            # File 组件构造: File(name, file=本地路径)
+                            import os, tempfile
+                            tmp = os.path.join(tempfile.gettempdir(), f"wpp_file_{fname[:20]}")
+                            with open(tmp, "wb") as f:
+                                f.write(file_bytes)
+                            msg.message = [Plain(f"[文件] {fname}"), File(name=fname, file=tmp)]
+                            msg.message_str = f"[文件] {fname}"
+                            logger.info(f"[WPP] file downloaded: {fname} ({len(file_bytes)} bytes)")
+                        else:
+                            logger.warning(f"[WPP] file download failed: {file_meta.get('filename')}")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[WPP] file download error: {e}")
+
             self._handle_msg(msg)
-        return web.Response(status=200)
 
     def _is_allowed(self, from_wxid: str, is_group: bool, chatroom_id: str, content: str) -> bool:
         """白名单 + 群消息策略判断:
@@ -421,11 +452,14 @@ class WppPlatformAdapter(Platform):
 
     # ------------------------------------------------------------------ 转换
     def _to_astrbot_message(self, payload: dict) -> AstrBotMessage | None:
-        """WPP vendor push payload → AstrBotMessage。"""
+        """兼容: payload → src → 转换。"""
         src = self._extract_msg_src(payload)
         if src is None:
             return None
+        return self._to_astrbot_message_src(src)
 
+    def _to_astrbot_message_src(self, src: dict) -> AstrBotMessage | None:
+        """单条消息 src → AstrBotMessage。"""
         from_wxid = _safe_str(src.get("fromUser") or src.get("fromWxid") or src.get("FromWxid") or src.get("sender_id"))
         if not from_wxid:
             return None
@@ -473,12 +507,31 @@ class WppPlatformAdapter(Platform):
         if msg_type == MSG_TYPE_TEXT:
             abm.message_str = content
             abm.message = [Plain(content)]
+        elif msg_type == MSG_TYPE_FILE or (src.get("kind") == "app" and isinstance(src.get("app"), dict) and src.get("app", {}).get("category") == "file"):
+            # v1 文件: kind=app + app.category=file; file.download_context 下载凭证
+            file_obj = src.get("file") if isinstance(src.get("file"), dict) else {}
+            app_obj = src.get("app") if isinstance(src.get("app"), dict) else {}
+            filename = _safe_str(app_obj.get("title")) or _safe_str(file_obj.get("name")) or _safe_str(file_obj.get("filename")) or content
+            dc = file_obj.get("download_context") if isinstance(file_obj.get("download_context"), dict) else {}
+            attach_id = _safe_str(dc.get("attach_id"))
+            user_name = _safe_str(dc.get("user_name"))
+            data_len = _safe_num(dc.get("data_len"), 0)
+            abm.message_str = f"[文件] {filename}"
+            abm.message = [Plain(abm.message_str)]
+            abm._wpp_file_meta = {
+                "filename": filename,
+                "attach_id": attach_id,
+                "user_name": user_name,
+                "data_len": data_len,
+            }
+            logger.info(f"[WPP] file msg: name={filename[:30]} attach_id={attach_id[:20] or '-'} len={data_len}")
         elif msg_type == MSG_TYPE_VOICE:
             voice_obj = src.get("voice") if isinstance(src.get("voice"), dict) else {}
             transcript = _safe_str(voice_obj.get("transcript")) or _safe_str(voice_obj.get("text"))
             if transcript:
-                abm.message_str = f"[语音] {transcript}"
-                abm.message = [Plain(abm.message_str)]
+                # vendor 已转好文字 (微信官方), 直接给纯文字 (不加 [语音] 前缀, 防 AI 误读为音频)
+                abm.message_str = transcript
+                abm.message = [Plain(transcript)]
                 logger.info(f"[WPP] voice transcript: {transcript[:50]}")
             else:
                 abm.message_str = "[语音]"
@@ -560,6 +613,41 @@ class WppPlatformAdapter(Platform):
             if any(k in data for k in ("fromUser", "fromWxid", "MsgId", "Content", "Text")):
                 return data
         return None
+
+    @staticmethod
+    def _extract_all_msg_src(payload: dict) -> list[dict]:
+        """提取 payload 里所有消息 (兼容多消息推送, 不丢失后面的文件/图片等)。"""
+        if not isinstance(payload, dict):
+            return []
+
+        out: list[dict] = []
+        data = payload.get("Data")
+
+        # 形态 A: v1 messages / items 数组
+        if isinstance(data, dict):
+            for kk in ("messages", "items"):
+                arr = data.get(kk)
+                if isinstance(arr, list):
+                    for item in arr:
+                        if isinstance(item, dict):
+                            out.append(item)
+        # 形态 B: AddMsgs 数组
+        if not out and payload.get("EventType") == "sync_message":
+            data_outer = payload.get("Data")
+            if isinstance(data_outer, dict):
+                data_inner = data_outer.get("Data")
+                if isinstance(data_inner, dict):
+                    add_msgs = data_inner.get("AddMsgs")
+                    if isinstance(add_msgs, list):
+                        for item in add_msgs:
+                            if isinstance(item, dict):
+                                out.append(item)
+        # 形态 C/D: 扁平单条
+        if not out:
+            single = _extract_msg_src(payload)
+            if single:
+                out.append(single)
+        return out
 
     # ------------------------------------------------------------------ 发送
     async def send_by_session(
