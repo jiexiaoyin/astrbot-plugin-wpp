@@ -406,6 +406,31 @@ class WppPlatformAdapter(Platform):
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"[WPP] file download error: {e}")
 
+            # 视频消息: 下载 → 注入 Video 组件 → 再提交
+            video_meta = getattr(msg, "_wpp_video_meta", None)
+            if video_meta:
+                try:
+                    if video_meta.get("msg_id"):
+                        video_bytes = await self._api.download_video(
+                            video_meta.get("msg_id", ""),
+                            video_meta.get("to_wxid", ""),
+                            video_meta.get("data_len", 0),
+                            video_meta.get("compress_type", 0),
+                        )
+                        if video_bytes:
+                            from astrbot.api.message_components import Video
+                            import os, tempfile
+                            tmp = os.path.join(tempfile.gettempdir(), f"wpp_video_{abs(hash(video_meta.get('msg_id','')))}.mp4")
+                            with open(tmp, "wb") as f:
+                                f.write(video_bytes)
+                            msg.message = [Plain(f"[视频] {len(video_bytes)} bytes"), Video(file=tmp)]
+                            msg.message_str = "[视频]"
+                            logger.info(f"[WPP] video downloaded: {len(video_bytes)} bytes")
+                        else:
+                            logger.warning(f"[WPP] video download failed: {video_meta}")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[WPP] video download error: {e}")
+
             self._handle_msg(msg)
 
     def _is_allowed(self, from_wxid: str, is_group: bool, chatroom_id: str, content: str) -> bool:
@@ -559,6 +584,19 @@ class WppPlatformAdapter(Platform):
                 "cdn": cdn_ctx,
             }
             abm.message_str = "[图片]"
+        elif msg_type == MSG_TYPE_VIDEO or src.get("kind") == "video":
+            # v1 视频: kind=video + video.download_context {msg_id, data_len, to_wxid}
+            video_obj = src.get("video") if isinstance(src.get("video"), dict) else {}
+            vc = video_obj.get("download_context") if isinstance(video_obj.get("download_context"), dict) else {}
+            abm.message_str = content or "[视频]"
+            abm.message = [Plain(f"[视频] {content or ''}".strip())]
+            abm._wpp_video_meta = {
+                "msg_id": _safe_str(vc.get("msg_id")),
+                "data_len": _safe_num(vc.get("data_len"), 0),
+                "to_wxid": _safe_str(vc.get("to_wxid")),
+                "compress_type": _safe_num(vc.get("compress_type"), 0),
+            }
+            logger.info(f"[WPP] video msg: meta={abm._wpp_video_meta}")
         else:
             abm.message_str = content
             abm.message = []

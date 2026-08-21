@@ -170,6 +170,63 @@ class WppClient:
         except Exception:  # noqa: BLE001
             return None
 
+    # ------------------------------------------------------------------ 视频下载
+    async def download_video(self, msg_id: str, to_wxid: str, data_len: int, compress_type: int = 0) -> bytes | None:
+        """POST /api/Tools/DownloadVideo — 分片下载 v1 视频.
+
+        参考 wpp-openclaw video.ts (v1.3.8 VIDEO-DOWNLOAD):
+          - 分片循环: startPos 从 0, 每段 min(1MB, totalLen-startPos), 直到 startPos>=totalLen
+          - 每段响应 Data.data.buffer (base64) / Data.Video; Data.totalLen 更新真实总长
+          - 终止条件用 startPos>=totalLen (别用 chunk.length<sectionLen, 每段固定 61440 会提前 break)
+          - 200MB 上限保护
+        """
+        session = await self._session_acquire()
+        url = self._url("/Tools/DownloadVideo")
+        headers = self._headers()
+        headers["TokenKey"] = self.auth_token
+
+        chunks: list[bytes] = []
+        start_pos = 0
+        total_len = data_len
+        CHUNK = 1024 * 1024  # 1MB 每段
+        MAX_VIDEO_BYTES = 200 * 1024 * 1024
+        try:
+            while start_pos < total_len:
+                section_len = min(CHUNK, total_len - start_pos)
+                body: dict = {
+                    "to_wxid": to_wxid,
+                    "msg_id": int(float(msg_id)) if str(msg_id).isdigit() else msg_id,
+                    "data_len": total_len,
+                    "section": {"start_pos": start_pos, "data_len": section_len},
+                    "compress_type": compress_type,
+                }
+                async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                    if resp.status != 200:
+                        return None
+                    try:
+                        data = json.loads(await resp.text())
+                    except json.JSONDecodeError:
+                        return None
+                    d = data.get("Data") or {}
+                    if isinstance(d.get("totalLen"), (int, float)) and d["totalLen"] > 0:
+                        total_len = int(d["totalLen"])
+                    b64 = (d.get("data") or {}).get("buffer") or d.get("Video") or ""
+                    if not b64:
+                        return None
+                    chunk = base64.b64decode(b64)
+                    if not chunk:
+                        return None
+                    chunks.append(chunk)
+                    start_pos += len(chunk)
+                    total_bytes = sum(len(c) for c in chunks)
+                    if total_bytes > MAX_VIDEO_BYTES:
+                        return None
+            if not chunks:
+                return None
+            return b"".join(chunks)
+        except Exception:  # noqa: BLE001
+            return None
+
     # ------------------------------------------------------------------ 图片下载
     async def download_image_cdn(self, file_aes_key: str, file_no: str) -> bytes | None:
         """POST /api/Tools/CdnDownloadImage — 通过 CDN 下载完整大图 (v1.2.5 首选路径)。
