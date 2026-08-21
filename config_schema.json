@@ -1,0 +1,38 @@
+{
+  "wpp_base_url": {
+    "type": "string",
+    "default": "http://127.0.0.1:18062",
+    "description": "WPP API 接口地址 (宿主机IP:18062; 18080是mitmdump非API)"
+  },
+  "wpp_auth_token": {
+    "type": "string",
+    "default": "",
+    "description": "WPP 访问凭证 X-Access-Token (= authcode, 同一值; 独立账号勿与 WPP-OpenClaw 共用)",
+    "isSecret": true
+  },
+  "wpp_allow_users": {
+    "type": "string",
+    "default": "",
+    "description": "白名单 wxid (逗号分隔); 空则允许所有私聊"
+  },
+  "wpp_group_reply": {
+    "type": "string",
+    "default": "atbot",
+    "description": "群消息回复模式: atbot=只回@机器人 / none=忽略群消息 / all=都回"
+  },
+  "webhook_host": {
+    "type": "string",
+    "default": "0.0.0.0",
+    "description": "webhook 监听地址"
+  },
+  "webhook_port": {
+    "type": "number",
+    "default": 6199,
+    "description": "webhook 监听端口 (AstrBot 容器已暴露 6199)"
+  },
+  "webhook_path": {
+    "type": "string",
+    "default": "/wpp/webhook",
+    "description": "webhook 路径"
+  }
+}

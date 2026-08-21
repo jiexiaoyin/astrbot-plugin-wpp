@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>WPP 账号信息</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        max-width: 640px; margin: 24px auto; padding: 0 16px;
+        background: #f7f8fa; color: #1f2329;
+      }
+      h1 { font-size: 18px; }
+      .card {
+        background: #fff; border-radius: 8px; padding: 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08);
+      }
+      label { display: block; margin-bottom: 6px; font-size: 13px; color: #4e5969; }
+      .row { display: flex; gap: 8px; }
+      input[type=text], input[type=password] {
+        flex: 1; padding: 8px 10px; border: 1px solid #dcdfe6;
+        border-radius: 6px; font-size: 14px;
+      }
+      button {
+        padding: 8px 18px; background: #165dff; color: #fff;
+        border: none; border-radius: 6px; font-size: 14px; cursor: pointer;
+      }
+      button:hover { background: #0e42d2; }
+      button:disabled { background: #a0aec0; cursor: not-allowed; }
+      .hint { font-size: 12px; color: #86909c; margin-top: 6px; }
+      #result { margin-top: 16px; }
+      .status-online { color: #00b42a; font-weight: 600; }
+      .status-offline { color: #f53f3f; font-weight: 600; }
+      pre { background: #f0f1f3; padding: 12px; border-radius: 6px; font-size: 12px; overflow-x: auto; }
+      .link { font-size: 12px; color: #165dff; }
+    </style>
+  </head>
+  <body>
+    <h1>WPP 账号信息</h1>
+    <div class="card">
+      <label for="token">X-Access-Token (= authcode)</label>
+      <div class="row">
+        <input type="password" id="token" placeholder="输入 X-Access-Token" />
+        <button id="btn">获取账号信息</button>
+      </div>
+      <div class="hint">填入绑定微信账号的 X-Access-Token，点击查询该账号是否在线、wxid 等。</div>
+      <div class="hint">若账号未在线，请到 WPP 管理面板登录: <a class="link" href="http://127.0.0.1:18062" target="_blank">http://127.0.0.1:18062</a></div>
+
+      <div id="result"></div>
+    </div>
+
+    <script type="module">
+      const bridge = window.AstrBotPluginPage;
+      const btn = document.getElementById("btn");
+      const tokenInput = document.getElementById("token");
+      const result = document.getElementById("result");
+
+      await bridge.ready();
+
+      function render(data) {
+        if (data.online) {
+          // 优先扁平字段 (resp.nickname), 兼容嵌套 profile
+          const p = data.profile || {};
+          const flat = {
+            nickname: data.nickname || p.nickname,
+            wxid: data.wxid || p.wxid,
+            province: data.province || p.province,
+            city: data.city || p.city,
+            country: data.country || p.country,
+            signature: data.signature || p.signature,
+            sex: data.sex ?? p.sex,
+            email: data.email || p.email,
+            mobile: data.mobile || p.mobile,
+          };
+          const rows = [];
+          const avatarChar = flat.nickname ? escapeHtml(flat.nickname.charAt(0)) : "?";
+          const avatarColor = "#165dff";
+          rows.push(`
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+              <div style="width:48px;height:48px;border-radius:50%;background:${avatarColor};color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:600;">${avatarChar}</div>
+              <div>
+                <div style="font-size:17px;font-weight:600;">${escapeHtml(flat.nickname || "未知")}</div>
+                <div class="hint">微信ID: ${escapeHtml(flat.wxid || "未知")}</div>
+              </div>
+            </div>`);
+          const field = (label, val) => val ? `<div style="margin-top:4px;font-size:13px;"><span style="color:#86909c;display:inline-block;width:60px;">${label}</span>${escapeHtml(val)}</div>` : "";
+          rows.push(field("地区", [flat.province, flat.city, flat.country].filter(Boolean).join(" ")));
+          rows.push(field("签名", flat.signature));
+          rows.push(field("性别", flat.sex === 1 ? "男" : (flat.sex === 2 ? "女" : "")));
+          rows.push(field("邮箱", flat.email));
+          rows.push(field("手机", flat.mobile));
+          rows.push(`<div class="status-online" style="margin-top:10px;">✅ 账号在线</div>`);
+          result.innerHTML = rows.join("");
+        } else {
+          result.innerHTML = `<div class="status-offline">⚠️ 账号未在线</div><div class="hint">${escapeHtml(data.message || "")}</div><div class="hint">请到 WPP 管理面板扫码登录后再试。</div>`;
+        }
+      }
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        })[c]);
+      }
+
+      btn.addEventListener("click", async () => {
+        const token = tokenInput.value.trim();
+        if (!token) { result.innerHTML = `<div class="status-offline">请输入 X-Access-Token</div>`; return; }
+        btn.disabled = true;
+        btn.textContent = "查询中...";
+        result.innerHTML = `<div class="hint">查询中...</div>`;
+        try {
+          const resp = await bridge.apiPost("account-info", { token });
+          if (resp && resp.error) {
+            result.innerHTML = `<div class="status-offline">错误: ${escapeHtml(resp.message || resp.error)}</div>`;
+          } else {
+            render(resp);
+          }
+        } catch (e) {
+          result.innerHTML = `<div class="status-offline">请求失败: ${escapeHtml(String(e))}</div>`;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "获取账号信息";
+        }
+      });
+    </script>
+  </body>
+</html>
