@@ -72,6 +72,11 @@ docker restart astrbot
 - auth_token 走 Dashboard WebUI 配置 (`platform_config`)，**不写进代码/日志**
 - 日志不打印明文凭证
 
+## 文档
+
+- [部署与运维指南](DEPLOY.md) — 部署/迭代/故障排查
+- [更新日志](CHANGELOG.md) — 版本历史 + 踩坑记录
+
 ## 参考
 
 - AstrBot 平台适配器开发文档: `docs/zh/dev/plugin-platform-adapter.md`
