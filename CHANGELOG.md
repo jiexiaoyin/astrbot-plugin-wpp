@@ -7,6 +7,7 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器首个可用版本，已开源�
 ### 功能
 - **文本收发闭环**：微信文本消息 → vendor push → webhook → AstrBot 事件总线 → AI 回复 → SendTxt → 微信
 - **图片接收**：v1 图片消息 CDN 完整大图下载 (`/Tools/CdnDownloadImage`) + DownloadImg 兜底，注入 AI 消息链
+- **语音转文字**：vendor 语音消息自带 `voice.transcript`（微信官方转写），直接作文本进 AI，无需 STT
 - **白名单**：`wpp_allow_users` 逗号分隔 wxid，私聊仅白名单触发 AI
 - **群消息策略**：`wpp_group_reply` = atbot / none / all（atbot 只回 @机器人）
 - **账号信息页面**：Dashboard 插件 Pages，查昵称/wxid/地区/签名/邮箱/手机/在线状态

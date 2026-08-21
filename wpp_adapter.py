@@ -469,9 +469,21 @@ class WppPlatformAdapter(Platform):
             abm.session_id = from_wxid
 
         # 文本: Plain; 图片: 加 Image 占位 (数据在 _handle_webhook 异步下载后注入)
+        # 语音: vendor 自带 voice.transcript (微信官方转写), 直接作文本, 无需 STT
         if msg_type == MSG_TYPE_TEXT:
             abm.message_str = content
             abm.message = [Plain(content)]
+        elif msg_type == MSG_TYPE_VOICE:
+            voice_obj = src.get("voice") if isinstance(src.get("voice"), dict) else {}
+            transcript = _safe_str(voice_obj.get("transcript")) or _safe_str(voice_obj.get("text"))
+            if transcript:
+                abm.message_str = f"[语音] {transcript}"
+                abm.message = [Plain(abm.message_str)]
+                logger.info(f"[WPP] voice transcript: {transcript[:50]}")
+            else:
+                abm.message_str = "[语音]"
+                abm.message = []
+                logger.info(f"[WPP] voice no transcript, voice keys: {list(voice_obj.keys())[:10]}")
         elif msg_type == MSG_TYPE_IMAGE:
             abm.message_str = content or "[图片]"
             # 图片下载凭证: 优先 CDN (cdn_download_contexts), 兜底 DownloadImg (local_id)
