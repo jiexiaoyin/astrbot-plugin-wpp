@@ -34,5 +34,10 @@
     "type": "string",
     "default": "/wpp/webhook",
     "description": "webhook 路径"
+  },
+  "webhook_public_url": {
+    "type": "string",
+    "default": "",
+    "description": "Webhook 公网回调地址 (注册给 vendor 的 AstrBot 地址, 如 http://<host>:6199/wpp/webhook; 留空用 webhook_host:port)"
   }
 }

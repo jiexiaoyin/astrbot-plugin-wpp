@@ -96,6 +96,11 @@ WPP_CONFIG_METADATA = {
         "type": "string",
         "hint": "默认 /wpp/webhook",
     },
+    "webhook_public_url": {
+        "description": "Webhook 公网回调地址",
+        "type": "string",
+        "hint": "注册给 vendor 的 AstrBot 公网地址 (如 http://<host>:6199/wpp/webhook)。留空则用 webhook_host:port",
+    },
 }
 
 
@@ -112,6 +117,7 @@ WPP_CONFIG_METADATA = {
         "webhook_host": "0.0.0.0",
         "webhook_port": 6199,
         "webhook_path": "/wpp/webhook",
+        "webhook_public_url": "",
     },
     config_metadata=WPP_CONFIG_METADATA,
 )
@@ -131,6 +137,7 @@ class WppPlatformAdapter(Platform):
         self.webhook_host = str(platform_config.get("webhook_host", "0.0.0.0"))
         self.webhook_port = int(platform_config.get("webhook_port", 6199))
         self.webhook_path = str(platform_config.get("webhook_path", "/wpp/webhook"))
+        self.webhook_public_url = str(platform_config.get("webhook_public_url", "") or "").rstrip("/")
 
         # 白名单配置: wpp_allow_users 逗号分隔 wxid; 空则默认允许所有人
         allow_str = str(platform_config.get("wpp_allow_users", "") or "").strip()
@@ -194,8 +201,12 @@ class WppPlatformAdapter(Platform):
         await self._ensure_logged_in()
 
         # ② 把回调 url 注册进 WPP vendor (best-effort, 失败不阻塞)
+        # 优先用配置的 webhook_public_url (公网可达), 否则 fallback host:port
         try:
-            callback_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
+            if self.webhook_public_url:
+                callback_url = self.webhook_public_url + self.webhook_path
+            else:
+                callback_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
             ok = await self._api.set_webhook(callback_url)
             status = "OK" if ok else "FAILED"
             logger.info(f"[WPP] register webhook to vendor: {status} url={callback_url}")
@@ -293,7 +304,7 @@ class WppPlatformAdapter(Platform):
             f"[WPP] ============================================================\n"
             f"[WPP] 账号未在线 (微信未在 vendor 成功建立连接)\n"
             f"[WPP] 请到 WPP 管理面板检查该账号登录状态 (iPad/Mac/安卓Pad):\n"
-            f"[WPP]   面板地址: http://127.0.0.1:18062\n"
+            f"[WPP]   面板地址: {self.base_url}\n"
             f"[WPP] 登录成功后再重启本平台即可接收消息。\n"
             f"[WPP] ============================================================"
         )

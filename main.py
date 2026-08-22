@@ -53,12 +53,14 @@ class WppPlugin(Star):
         if not token:
             return error_response("缺少 X-Access-Token")
 
-        # base_url 可选; 缺省用适配器默认 (宿主机IP:18062)
+        # base_url 可选; 缺省从已注册的 wpp 适配器配置读取 (避免硬编码 127.0.0.1:18062)
         if not base_url:
-            base_url = "http://127.0.0.1:18062"
+            base_url = self._get_wpp_base_url()
         base_url = str(base_url).rstrip("/")
 
         client = WppClient(base_url, token)
+        # 面板地址: 从 base_url 派生 (前端显示用, 避免硬编码 127.0.0.1:18062)
+        panel_url = base_url
         try:
             online, resp = await client.is_online()
             data = resp.get("Data") or {}
@@ -66,7 +68,7 @@ class WppPlugin(Star):
                 prof = await self._fetch_profile(client)
                 # ⚠️ 不要用 "data" 字段名! Dashboard 前端解构 r.data.data 会拿到它,
                 #    导致 bridge 端收到的是 GetOnlineInfo.Data 而不是完整响应。
-                resp_payload = {"online": True, "account_data": data, "message": resp.get("Message", "成功")}
+                resp_payload = {"online": True, "account_data": data, "message": resp.get("Message", "成功"), "panel_url": panel_url}
                 resp_payload["profile"] = prof
                 # 扁平化: 顶层也放 profile 字段, 前端可直接读 resp.nickname
                 if prof:
@@ -80,7 +82,7 @@ class WppPlugin(Star):
                 if online:
                     data = resp.get("Data") or {}
                     prof = await self._fetch_profile(client)
-                    resp_payload = {"online": True, "account_data": data, "message": f"自动心跳已拉起: {resp.get('Message', '')}"}
+                    resp_payload = {"online": True, "account_data": data, "message": f"自动心跳已拉起: {resp.get('Message', '')}", "panel_url": panel_url}
                     resp_payload["profile"] = prof
                     if prof:
                         resp_payload.update(prof)
@@ -93,12 +95,25 @@ class WppPlugin(Star):
                     "profile": None,
                     "message": resp.get("Message", "未登录或缓存缺失"),
                     "auto_heartbeat": resp.get("Code") == 0,
+                    "panel_url": panel_url,
                 }
             )
         except Exception as e:  # noqa: BLE001
             return error_response(f"查询失败: {e}")
         finally:
             await client.close()
+
+    def _get_wpp_base_url(self) -> str:
+        """从已注册的 wpp 平台适配器配置读取 base_url。"""
+        try:
+            pm = getattr(self.context, "platform_manager", None)
+            insts = getattr(pm, "platform_insts", []) if pm else []
+            for inst in insts:
+                if getattr(inst, "meta", None) and inst.meta().name == "wpp":
+                    return str(getattr(inst, "base_url", "") or "http://127.0.0.1:18062")
+        except Exception:  # noqa: BLE001
+            pass
+        return "http://127.0.0.1:18062"
 
     @staticmethod
     async def _fetch_profile(client) -> dict | None:
