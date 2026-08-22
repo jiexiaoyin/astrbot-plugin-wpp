@@ -405,13 +405,27 @@ class WppPlatformAdapter(Platform):
                             from astrbot.api.message_components import File
                             fname = file_meta.get("filename", "file")
                             # File 组件构造: File(name, file=本地路径)
-                            import os, tempfile
-                            tmp = os.path.join(tempfile.gettempdir(), f"wpp_file_{fname[:20]}")
+                            # 写入 AstrBot 允许的 temp 路径 (/AstrBot/data/temp), AI 才能读取
+                            # 文件名保留扩展名 (截断 base, 不截断后缀, 否则 AI 识别不了类型)
+                            import os
+                            from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
+                            base, ext = os.path.splitext(fname)
+                            safe_base = base[:20] or "file"
+                            tmp = os.path.join(get_astrbot_temp_path(), f"wpp_{safe_base}{ext}")
                             with open(tmp, "wb") as f:
                                 f.write(file_bytes)
-                            msg.message = [Plain(f"[文件] {fname}"), File(name=fname, file=tmp)]
+                            # 根据扩展名提示 AI 用对应技能 (避免 AI 用文本工具读二进制失败)
+                            skill_hint = ""
+                            ext_l = ext.lower()
+                            if ext_l in (".xlsx", ".xlsm", ".xls", ".csv", ".tsv"):
+                                skill_hint = " (这是Excel/表格文件, 请用 spreadsheets 技能读取, 不要用文本读取工具)"
+                            elif ext_l in (".pdf",):
+                                skill_hint = " (这是PDF文件, 请用 pdf/document 技能读取)"
+                            elif ext_l in (".docx", ".doc", ".pptx"):
+                                skill_hint = " (这是Office文档, 请用 documents 技能读取)"
+                            msg.message = [Plain(f"[文件] {fname}{skill_hint}"), File(name=fname, file=tmp)]
                             msg.message_str = f"[文件] {fname}"
-                            logger.info(f"[WPP] file downloaded: {fname} ({len(file_bytes)} bytes)")
+                            logger.info(f"[WPP] file downloaded: {fname} ({len(file_bytes)} bytes) -> {tmp}")
                         else:
                             logger.warning(f"[WPP] file download failed: {file_meta.get('filename')}")
                 except Exception as e:  # noqa: BLE001
@@ -693,7 +707,7 @@ class WppPlatformAdapter(Platform):
                                 out.append(item)
         # 形态 C/D: 扁平单条
         if not out:
-            single = _extract_msg_src(payload)
+            single = WppPlatformAdapter._extract_msg_src(payload)
             if single:
                 out.append(single)
         return out
