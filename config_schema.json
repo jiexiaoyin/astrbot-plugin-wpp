@@ -33,7 +33,12 @@
   "webhook_path": {
     "type": "string",
     "default": "/wpp/webhook",
-    "description": "webhook 路径"
+    "description": "webhook 路径 (路径即密钥: 会拼上 webhook_token, 实际为 /wpp/webhook/<token>)"
+  },
+  "webhook_token": {
+    "type": "string",
+    "default": "",
+    "description": "webhook 路径 token (安全加固: 随机字符串, 插入 webhook 路径形成密钥; 留空则自动生成 32 位随机值, 部署后请记下并同步到 nginx 等前置代理)"
   },
   "webhook_public_url": {
     "type": "string",

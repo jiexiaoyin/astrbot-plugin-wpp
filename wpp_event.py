@@ -4,7 +4,6 @@ AstrBot 回复通过 event.send() 发送 — 基类 AstrMessageEvent.send() 只�
 必须由平台子类重写才能真正发到微信。参考 aiocqhttp/dingtalk 事件类范式。
 """
 
-import logging
 from typing import TYPE_CHECKING
 
 from astrbot import logger

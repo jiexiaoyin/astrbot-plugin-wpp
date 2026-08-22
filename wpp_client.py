@@ -17,12 +17,20 @@ from typing import Any
 import aiohttp
 from astrbot import logger
 
+# P2-3: 文件下载大小上限 (200MB, 与视频一致), 防超大文件撑爆内存
+MAX_FILE_BYTES = 200 * 1024 * 1024
+
 
 class WppApiError(Exception):
     def __init__(self, code: Any, message: str):
         self.code = code
         self.message = message
         super().__init__(f"WPP API error code={code}: {message}")
+
+
+# P1-5: 已知 Code 语义特殊的端点白名单 — 这些端点 Code!=0 不代表调用失败 (如部分查询型),
+# 调用方自行判断返回值。实测当前插件用到的端点成功均 Code=0, 此集合默认空。
+_IGNORE_CODE_ENDPOINTS: frozenset[str] = frozenset()
 
 
 class WppClient:
@@ -78,9 +86,11 @@ class WppClient:
                         data = json.loads(text)
                     except json.JSONDecodeError:
                         raise WppApiError("bad_json", f"{endpoint} -> 非 JSON 响应: {text[:200]}")
-                    # vendor 成功判定: 以 Success:true 为准 (Code 语义不统一, 有些端点 0=成功有些 1=成功)
-                    if data.get("Success") is False:
-                        raise WppApiError(data.get("Code"), f"{endpoint} -> {text[:300]}")
+                    # vendor 成功判定 (P1-5): Code!=0 或 Success is False 都视为失败。
+                    # 实测 send_txt/getqr 等成功均 Code=0 + Success=true; 已知语义特殊的端点走豁免。
+                    code = data.get("Code")
+                    if data.get("Success") is False or (code is not None and code != 0 and endpoint not in _IGNORE_CODE_ENDPOINTS):
+                        raise WppApiError(code if code is not None else data.get("CodeValue", "?"), f"{endpoint} -> {text[:300]}")
                     return data
             except aiohttp.ClientError as e:
                 last_err = e
@@ -163,8 +173,16 @@ class WppClient:
             async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
                 if resp.status != 200:
                     return None
+                # P2-3: 大小上限 (200MB), 防超大文件撑爆内存
+                content_length = resp.headers.get("Content-Length")
+                if content_length and content_length.isdigit() and int(content_length) > MAX_FILE_BYTES:
+                    logger.warning(f"[WPP] file too large: {content_length} bytes, skip")
+                    return None
                 buf = await resp.read()
                 if len(buf) < 10:
+                    return None
+                if len(buf) > MAX_FILE_BYTES:
+                    logger.warning(f"[WPP] file too large: {len(buf)} bytes, skip")
                     return None
                 return buf
         except Exception:  # noqa: BLE001
@@ -179,6 +197,9 @@ class WppClient:
           - 每段响应 Data.data.buffer (base64) / Data.Video; Data.totalLen 更新真实总长
           - 终止条件用 startPos>=totalLen (别用 chunk.length<sectionLen, 每段固定 61440 会提前 break)
           - 200MB 上限保护
+        ⚠️ 实测 (2026-08-22): vendor 此端点外层 Success:true 但内层 BaseResponse.ret=-2,
+          返回的 buffer 为空 → 本函数返回 None。即当前 vendor 版本视频下载不可用
+          (除非 vendor 后续修复)。调用方需接受 None 兜底。
         """
         session = await self._session_acquire()
         url = self._url("/Tools/DownloadVideo")
@@ -326,6 +347,29 @@ class WppClient:
         await self._post("/Webhook/Set", body)
         return True
 
+    async def set_business_webhook(self, sync_message_url: str, logout_url: str = "") -> bool:
+        """POST /api/Webhook/Business/Set — 设置业务回调 URL (完整消息推送)。
+
+        参考 wpp-openclaw: 只配 /Webhook/Set 只会推空 Data 的 sync_message。
+        业务回调才能推完整消息 (AddMsgs 含 content)。
+        """
+        try:
+            await self._post("/Webhook/Business/Set", {
+                "syncMessageUrl": sync_message_url,
+                "logoutUrl": logout_url or sync_message_url,
+            })
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def start_auto_sync(self, target_url: str) -> bool:
+        """POST /api/Msg/StartAutoSync — 启动自动同步 (vendor 推完整消息到 target_url)。"""
+        try:
+            await self._post("/Msg/StartAutoSync", {"TargetURL": target_url})
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     # ------------------------------------------------------------------ 工具
     async def _resolve_image_to_base64(self, image_ref: str) -> str:
         """把 URL/路径/base64 统一成裸 base64 (无前缀)。"""
@@ -336,6 +380,9 @@ class WppClient:
             if b64:
                 return b64
         if image_ref.startswith("http://") or image_ref.startswith("https://"):
+            # P1-2 SSRF 防护: 仅允许白名单域名 (微信 CDN / 腾讯云 OSS), 禁止请求内网/任意外部
+            if not self._is_allowed_image_url(image_ref):
+                raise WppApiError("ssrf_blocked", f"图片 URL 不在白名单, 已阻止下载: {image_ref}")
             session = await self._session_acquire()
             async with session.get(image_ref, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                 if resp.status != 200:
@@ -348,3 +395,36 @@ class WppClient:
         if p.exists():
             return base64.b64encode(p.read_bytes()).decode()
         raise WppApiError("bad_image", f"无法解析图片引用: {image_ref}")
+
+    @staticmethod
+    def _is_allowed_image_url(url: str) -> bool:
+        """SSRF 白名单: 仅放行微信/腾讯系图片 CDN 域名 (AI 可能返回的图片 URL 来源)。
+
+        默认白名单:
+          - *.qlogo.cn (微信头像/图片 CDN)
+          - wx.qlogo.cn / mmbiz.qpic.cn (微信素材)
+          - *.myqcloud.com (腾讯云 COS, AI 生成的图可能存这里)
+          - 127.0.0.1 / localhost (本机调试)
+        其它域名一律拒绝 (防 AI 被 prompt injection 诱导请求内网/任意外部地址)。
+        """
+        import urllib.parse
+
+        host = urllib.parse.urlparse(url).hostname or ""
+        host = host.lower()
+        # 明确拒绝 IP 字面量 (除回环)
+        if host and host not in ("127.0.0.1", "localhost", "::1"):
+            import ipaddress
+            try:
+                ipaddress.ip_address(host)
+                return False  # 非回环 IP 直接拒绝
+            except ValueError:
+                pass  # 是域名, 走下面后缀匹配
+        allowed_suffixes = (
+            ".qlogo.cn",
+            ".qpic.cn",
+            ".myqcloud.com",
+            "qlogo.cn",
+            "qpic.cn",
+            "myqcloud.com",
+        )
+        return host in ("127.0.0.1", "localhost", "::1") or host.endswith(allowed_suffixes)
