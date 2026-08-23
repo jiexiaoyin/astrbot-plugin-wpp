@@ -211,6 +211,10 @@ class WppPlatformAdapter(Platform):
             self.blacklist_groups = set(persisted["blacklist_groups"])
         if persisted.get("require_at_mention") is not None:
             self.require_at_mention = bool(persisted["require_at_mention"])
+        # 配置文件热更新: 记录当前文件 mtime, 后台循环检测外部修改 → 自动重载
+        #   (手动编辑 wpp_whitelist.json 也即时生效, 对齐 wpp-openclaw 配置热重载)
+        self._whitelist_mtime = self._get_file_mtime()
+        self._reload_task: asyncio.Task | None = None
 
         self._api = WppClient(self.base_url, self.auth_token)
         self._runner = None
@@ -295,6 +299,8 @@ class WppPlatformAdapter(Platform):
         # ③ 启动账号状态后台刷新任务 (供 get_stats / Dashboard 卡片展示)
         # P2-4: _refresh_account_status 已在 ①.5 调用过, 这里不再重复调用, 直接起循环任务
         self._status_task = asyncio.create_task(self._account_status_loop())
+        # ③.5 配置文件热更新: 外部修改 wpp_whitelist.json → 自动重载 (即时生效)
+        self._reload_config_loop()
 
     async def _account_status_loop(self) -> None:
         """后台循环: 每 60s 刷新账号在线状态缓存。"""
@@ -396,6 +402,12 @@ class WppPlatformAdapter(Platform):
             self._status_task.cancel()
             try:
                 await self._status_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        if self._reload_task:
+            self._reload_task.cancel()
+            try:
+                await self._reload_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         if self._runner:
@@ -688,9 +700,68 @@ class WppPlatformAdapter(Platform):
                 }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            # 记录本次写入 mtime, 避免热更新检测到"自己写的"而重复重载
+            self._whitelist_mtime = self._get_file_mtime()
             logger.info(f"[WPP] 运行时配置已持久化 → {self._whitelist_file}")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[WPP] 写配置文件失败: {e}")
+
+    # ------------------------------------------------------------------ 配置文件热更新
+    def _get_file_mtime(self) -> float:
+        """获取配置文件 mtime (不存在返回 0)。"""
+        try:
+            from pathlib import Path
+            p = Path(self._whitelist_file)
+            return p.stat().st_mtime if p.exists() else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _apply_persisted_config(self, persisted: dict) -> bool:
+        """把文件配置合并到内存 (热更新重载用)。返回是否有变化。"""
+        changed = False
+        if persisted.get("allow_users"):
+            new_set = set(persisted["allow_users"])
+            if new_set != self.allow_users:
+                self.allow_users = new_set
+                changed = True
+        if persisted.get("group_reply"):
+            new_val = persisted["group_reply"]
+            if new_val != self.group_reply:
+                self.group_reply = new_val
+                changed = True
+        if persisted.get("blacklist_groups") is not None:
+            new_set = set(persisted["blacklist_groups"])
+            if new_set != self.blacklist_groups:
+                self.blacklist_groups = new_set
+                changed = True
+        if persisted.get("require_at_mention") is not None:
+            new_val = bool(persisted["require_at_mention"])
+            if new_val != self.require_at_mention:
+                self.require_at_mention = new_val
+                changed = True
+        return changed
+
+    def _reload_config_loop(self) -> None:
+        """后台循环: 每 3 秒检查配置文件 mtime, 外部修改 → 自动重载。"""
+        import asyncio
+
+        async def _loop() -> None:
+            while True:
+                try:
+                    await asyncio.sleep(3)
+                    mtime = self._get_file_mtime()
+                    # 外部修改: mtime 变了且不是自己刚写的
+                    if mtime > 0 and mtime != self._whitelist_mtime:
+                        self._whitelist_mtime = mtime
+                        persisted = self._load_whitelist_file()
+                        if self._apply_persisted_config(persisted):
+                            logger.info("[WPP] 配置文件外部修改已热更新")
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[WPP] 配置文件热更新检查失败: {e}")
+
+        self._reload_task = asyncio.create_task(_loop())
 
     # ------------------------------------------------------------------ filehelper 命令
     async def _handle_filehelper_command(self, content: str, from_wxid: str, recipient_id: str) -> None:
