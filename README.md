@@ -20,14 +20,15 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 ### 完善的接入能力
 - **白名单**：仅白名单 wxid 触发 AI（防陌生人骚扰）
 - **群消息策略**：`atbot`（只回@机器人）/ `none` / `all`
-- **filehelper 白名单命令**：在文件传输助手里发指令管理白名单（仿 wpp-openclaw）
-  - `/adduser <wxid>` 授权私聊白名单 / `/deluser <wxid>` 移除
-  - `/addgroup <群ID>` 授权群聊白名单 / `/delgroup <群ID>` 移除
-  - `/blacklist add|del|list <群ID>` 黑名单群管理（黑白名单**互斥**，加一边自动移另一边）
-  - `/group atbot|none|all` 群回复模式热切
+- **filehelper 白名单命令**：在文件传输助手里发指令管理白名单（仿 wpp-openclaw），三域统一 **add/del/list**
+  - `/user add|del <wxid> [wxid...]` 私聊白名单（支持批量）/ `/user list` 查看
+  - `/group add|del <群ID> [群ID...]` 群白名单（支持批量）/ `/group list` 查看
+  - `/blacklist add|del|list <群ID> [群ID...]` 黑名单群（黑白名单**互斥**，加一边自动移另一边）
+  - `/mode atbot|none|all` 群回复模式热切
   - `/at on|off` 群聊是否必须 @ 才回复
   - `/help` 显示全部命令 — 运行时立即生效，**持久化**（重启不丢），无需改配置重启
   - **配置文件热更新**：手动编辑 `wpp_whitelist.json` 也自动生效（约 3 秒检测），无需重启
+  - 旧命令 `/adduser` `/deluser` `/addgroup` `/delgroup` 仍可用（单参数兼容）
 - **多消息遍历**：vendor 一次推多条不遗漏
 - **自动心跳**：账号离线自动拉上线
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
