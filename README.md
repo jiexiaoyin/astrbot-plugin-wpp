@@ -26,9 +26,8 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
   - `/blacklist add|del|list <群ID> [群ID...]` 黑名单群（黑白名单**互斥**，加一边自动移另一边）
   - `/mode atbot|none|all` 群回复模式热切
   - `/at on|off` 群聊是否必须 @ 才回复
-  - `/help` 显示全部命令 — 运行时立即生效，**持久化**（重启不丢），无需改配置重启
+  - `/help` 显示全部命令（**自动遍历命令注册表**，新命令自动进 help）— 运行时立即生效，**持久化**（重启不丢），无需改配置重启
   - **配置文件热更新**：手动编辑 `wpp_whitelist.json` 也自动生效（约 3 秒检测），无需重启
-  - 旧命令 `/adduser` `/deluser` `/addgroup` `/delgroup` 仍可用（单参数兼容）
 - **多消息遍历**：vendor 一次推多条不遗漏
 - **自动心跳**：账号离线自动拉上线
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
