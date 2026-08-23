@@ -468,6 +468,10 @@ class WppPlatformAdapter(Platform):
         is_group = bool(chatroom_id)
         # 机器人 wxid: 消息的 recipient_id 最可靠 (当前会话的机器人身份)
         recipient_id = _safe_str(src.get("recipient_id") or src.get("toWxid") or src.get("ToWxid"))
+        # filehelper 会话识别: recipient_id 或 conversation_id = "filehelper"
+        #   (老板在机器人手机的文件传输助手里发命令, 参考 wpp-openclaw v1.3.39)
+        conversation_id = _safe_str(src.get("conversation_id"))
+        is_filehelper = (recipient_id == "filehelper") or (conversation_id == "filehelper")
         # P1-1 去重: 用消息 id (msgId/svr_id/id) 去重, 同 id 重复推送只处理一次
         msg_id_key = _safe_str(src.get("msgId") or src.get("MsgId") or src.get("svr_id") or src.get("id"))
         if msg_id_key and msg_id_key in self._seen_msg_ids:
@@ -475,6 +479,12 @@ class WppPlatformAdapter(Platform):
             return
         # 收到消息探针 (P2-2: DEBUG 级, 避免每条消息/空消息/公众号刷屏 INFO 日志)
         logger.debug(f"[WPP] 收到: from={from_wxid} group={chatroom_id or '-'} is_group={is_group} content={content[:40]!r} recipient={recipient_id!r} self_wxid={self._self_wxid!r} self_nick={self._self_nickname!r}")
+        # filehelper 命令处理 (老板拍板: 像 wpp-openclaw 一样, 文件传输助手里发指令管理白名单)
+        #   放在 direction/自己消息过滤之前 — filehelper 命令是 outgoing + from_wxid=自己, 但要处理
+        #   参考 wpp-openclaw v1.3.39: isFileHelperCommand 即使 outgoing 也放行
+        if is_filehelper and content.startswith("/"):
+            await self._handle_filehelper_command(content, from_wxid, recipient_id)
+            return
         # v1: 只处理 incoming; 忽略公众号 (gh_)
         direction = _safe_str(src.get("direction"))
         if direction and direction not in ("incoming", "1"):
@@ -612,6 +622,83 @@ class WppPlatformAdapter(Platform):
         while len(self._seen_msg_ids_order) > self._dedup_max:
             old = self._seen_msg_ids_order.pop(0)
             self._seen_msg_ids.discard(old)
+
+    # ------------------------------------------------------------------ filehelper 命令
+    async def _handle_filehelper_command(self, content: str, from_wxid: str, recipient_id: str) -> None:
+        """处理文件传输助手命令: /help /adduser /deluser /addgroup /delgroup。
+
+        参考 wpp-openclaw FILEHELPER_COMMANDS (v1.3.39): 老板在机器人手机的文件传输助手里
+        发命令管理白名单, 命令执行后回发 filehelper 确认。运行时改 self.allow_users 立即生效。
+        """
+        # filehelper 命令只有 admin (机器人自己) 能发 — from_wxid 通常是机器人自己
+        # 注意: filehelper 消息 from_wxid = 机器人自己 (senderId), 与 recipient_id=filehelper 并存
+        parts = content.strip().split()
+        cmd = (parts[0] if parts else "").lower()
+        args = parts[1:]
+
+        async def reply(text: str) -> None:
+            # 回发到 filehelper (机器人自己看); 失败仅告警
+            try:
+                await self._api.send_text("filehelper", text)
+                logger.info(f"[WPP FILEHELPER] → {text[:60]}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[WPP FILEHELPER] 回发失败: {e}")
+
+        if cmd == "/help":
+            await reply(
+                "【WPP 白名单命令】\n"
+                "/adduser <wxid>   授权私聊白名单\n"
+                "/deluser <wxid>   移除私聊白名单\n"
+                "/addgroup <群ID>  授权群聊白名单\n"
+                "/delgroup <群ID>  移除群聊白名单\n"
+                "/help             显示本帮助"
+            )
+            return
+
+        if cmd == "/adduser":
+            target = (args[0] if args else "").strip()
+            if not target:
+                await reply("用法: /adduser <wxid>\n示例: /adduser wxid_abc123")
+                return
+            self.allow_users.add(target)
+            await reply(f"✅ 已授权私聊白名单: {target}\n当前 ({len(self.allow_users)}): {', '.join(sorted(self.allow_users))}")
+            return
+
+        if cmd == "/deluser":
+            target = (args[0] if args else "").strip()
+            if not target:
+                await reply("用法: /deluser <wxid>\n示例: /deluser wxid_abc123")
+                return
+            if target in self.allow_users:
+                self.allow_users.discard(target)
+                remaining = ", ".join(sorted(self.allow_users))
+                await reply(f"✅ 已移除私聊白名单: {target}\n当前 ({len(self.allow_users)}): {remaining or '(空)'}")
+            else:
+                await reply(f"❌ {target} 不在私聊白名单中")
+            return
+
+        if cmd == "/addgroup":
+            target = (args[0] if args else "").strip()
+            if not target:
+                await reply("用法: /addgroup <群ID>\n示例: /addgroup xxxxxxxx@chatroom")
+                return
+            self.allow_users.add(target)
+            await reply(f"✅ 已授权群聊白名单: {target}\n当前群 ({sum(1 for u in self.allow_users if u.endswith('@chatroom'))}): {', '.join(sorted(u for u in self.allow_users if u.endswith('@chatroom'))) or '(空)'}")
+            return
+
+        if cmd == "/delgroup":
+            target = (args[0] if args else "").strip()
+            if not target:
+                await reply("用法: /delgroup <群ID>\n示例: /delgroup xxxxxxxx@chatroom")
+                return
+            if target in self.allow_users:
+                self.allow_users.discard(target)
+                await reply(f"✅ 已移除群聊白名单: {target}\n当前群 ({sum(1 for u in self.allow_users if u.endswith('@chatroom'))}): {', '.join(sorted(u for u in self.allow_users if u.endswith('@chatroom'))) or '(空)'}")
+            else:
+                await reply(f"❌ {target} 不在群聊白名单中")
+            return
+
+        await reply(f"未知命令: {cmd}\n用 /help 查看全部命令。")
 
     def _is_allowed(self, from_wxid: str, is_group: bool, chatroom_id: str, content: str, recipient_id: str = "") -> bool:
         """白名单 + 群消息策略判断:
