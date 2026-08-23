@@ -23,7 +23,10 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 - **filehelper 白名单命令**：在文件传输助手里发指令管理白名单（仿 wpp-openclaw）
   - `/adduser <wxid>` 授权私聊白名单 / `/deluser <wxid>` 移除
   - `/addgroup <群ID>` 授权群聊白名单 / `/delgroup <群ID>` 移除
-  - `/help` 显示全部命令 — 运行时立即生效，无需改配置重启
+  - `/blacklist add|del|list <群ID>` 黑名单群管理（黑白名单**互斥**，加一边自动移另一边）
+  - `/group atbot|none|all` 群回复模式热切
+  - `/at on|off` 群聊是否必须 @ 才回复
+  - `/help` 显示全部命令 — 运行时立即生效，**持久化**（重启不丢），无需改配置重启
 - **多消息遍历**：vendor 一次推多条不遗漏
 - **自动心跳**：账号离线自动拉上线
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
