@@ -231,6 +231,17 @@ class WppPlatformAdapter(Platform):
         self._seen_msg_ids: set[str] = set()
         self._seen_msg_ids_order: list[str] = []
         self._dedup_max = 200
+        # filehelper 命令注册表: 新命令在此登记, /help 自动遍历生成 (仿 wpp-openclaw FILEHELPER_COMMANDS)
+        self._filehelper_commands: list[tuple[str, str, Any]] = [
+            ("/user add|del <wxid> [wxid...]", "私聊白名单增删 (批量)", self._handle_user_command),
+            ("/user list", "查看私聊白名单", self._handle_user_command),
+            ("/group add|del <群ID> [群ID...]", "群白名单增删 (批量)", self._handle_group_command),
+            ("/group list", "查看群白名单", self._handle_group_command),
+            ("/blacklist add|del|list <群ID> [群ID...]", "黑名单群管理 (批量)", self._handle_blacklist_command),
+            ("/mode atbot|none|all", "群回复模式", self._handle_mode_command),
+            ("/at on|off", "群聊是否必须@才回复", self._handle_at_command),
+            ("/help", "显示本帮助", self._handle_help_command),
+        ]
 
     # ------------------------------------------------------------------ Platform
     def meta(self) -> PlatformMetadata:
@@ -776,7 +787,7 @@ class WppPlatformAdapter(Platform):
 
     # ------------------------------------------------------------------ filehelper 命令
     async def _handle_filehelper_command(self, content: str, from_wxid: str, recipient_id: str) -> None:
-        """处理文件传输助手命令: /help /adduser /deluser /addgroup /delgroup。
+        """处理文件传输助手命令: /user /group /blacklist /mode /at /help。
 
         参考 wpp-openclaw FILEHELPER_COMMANDS (v1.3.39): 老板在机器人手机的文件传输助手里
         发命令管理白名单, 命令执行后回发 filehelper 确认。运行时改 self.allow_users 立即生效。
@@ -795,151 +806,16 @@ class WppPlatformAdapter(Platform):
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[WPP FILEHELPER] 回发失败: {e}")
 
-        if cmd == "/help":
-            await reply(
-                "【WPP 命令】\n"
-                "/user add|del <wxid> [wxid...]  私聊白名单\n"
-                "/user list    查看私聊白名单\n"
-                "/group add|del <群ID> [群ID...]  群白名单\n"
-                "/group list   查看群白名单\n"
-                "/blacklist add|del|list <群ID>  黑名单群\n"
-                "/mode atbot|none|all  群回复模式\n"
-                "/at on|off  群聊是否必须@才回复\n"
-                "/help        显示本帮助\n"
-                "(旧命令 /adduser /deluser /addgroup /delgroup 仍可用)"
-            )
-            return
-
-        # ===== /user 私聊白名单 (add|del|list) =====
-        if cmd == "/user":
-            return await self._handle_user_command(args, reply)
-
-        # ===== /group 群白名单 (add|del|list) =====
-        if cmd == "/group":
-            return await self._handle_group_command(args, reply)
-
-        # ===== /mode 群回复模式 (替代旧 /group atbot) =====
-        if cmd == "/mode":
-            mode = (args[0] if args else "").strip().lower()
-            if mode not in ("atbot", "none", "all"):
-                await reply("用法: /mode atbot|none|all\natbot=只回@机器人的群消息 / none=忽略群消息 / all=群消息都回\n当前: " + self.group_reply)
-                return
-            self.group_reply = mode
-            self._save_whitelist_file()  # 持久化
-            await reply(f"✅ 群消息回复模式已设为: {mode}\n(atbot=只回@ / none=忽略群 / all=都回)")
-            return
-
-        # ===== 兼容旧命令 (单参数) =====
-        if cmd == "/adduser":
-            targets = self._split_args(args)
-            if not targets:
-                await reply("用法: /adduser <wxid>\n(新命令: /user add <wxid> [wxid...])")
-                return
-            added = [t for t in targets if t not in self.allow_users]
-            for t in targets:
-                self.allow_users.add(t)
-            self._save_whitelist_file()
-            await reply(f"✅ 已授权私聊白名单: {', '.join(added) or '(均已存在)'}\n当前 ({len(self.allow_users)}): {', '.join(sorted(self.allow_users))}")
-            return
-
-        if cmd == "/deluser":
-            targets = self._split_args(args)
-            if not targets:
-                await reply("用法: /deluser <wxid>\n(新命令: /user del <wxid> [wxid...])")
-                return
-            removed = [t for t in targets if t in self.allow_users]
-            missing = [t for t in targets if t not in self.allow_users]
-            for t in removed:
-                self.allow_users.discard(t)
-            self._save_whitelist_file()
-            remaining = ", ".join(sorted(self.allow_users))
-            msg = f"✅ 已移除私聊白名单: {', '.join(removed) or '(无)'}"
-            if missing:
-                msg += f"\n⚠️ 不在白名单: {', '.join(missing)}"
-            msg += f"\n当前 ({len(self.allow_users)}): {remaining or '(空)'}"
-            await reply(msg)
-            return
-
-        if cmd == "/addgroup":
-            targets = self._split_args(args)
-            if not targets:
-                await reply("用法: /addgroup <群ID>\n(新命令: /group add <群ID> [群ID...])")
-                return
-            added = [t for t in targets if t not in self.allow_users]
-            for t in targets:
-                self.allow_users.add(t)
-                # 互斥: 加白名单 → 从黑名单自动移除
-                if t in self.blacklist_groups:
-                    self.blacklist_groups.discard(t)
-            self._save_whitelist_file()
-            groups = [u for u in sorted(self.allow_users) if u.endswith("@chatroom")]
-            await reply(f"✅ 已授权群白名单: {', '.join(added) or '(均已存在)'}\n当前群 ({len(groups)}): {', '.join(groups) or '(空)'}")
-            return
-
-        if cmd == "/delgroup":
-            targets = self._split_args(args)
-            if not targets:
-                await reply("用法: /delgroup <群ID>\n(新命令: /group del <群ID> [群ID...])")
-                return
-            removed = [t for t in targets if t in self.allow_users]
-            missing = [t for t in targets if t not in self.allow_users]
-            for t in removed:
-                self.allow_users.discard(t)
-            self._save_whitelist_file()
-            groups = [u for u in sorted(self.allow_users) if u.endswith("@chatroom")]
-            msg = f"✅ 已移除群白名单: {', '.join(removed) or '(无)'}"
-            if missing:
-                msg += f"\n⚠️ 不在白名单: {', '.join(missing)}"
-            msg += f"\n当前群 ({len(groups)}): {', '.join(groups) or '(空)'}"
-            await reply(msg)
-            return
-
-        if cmd == "/blacklist":
-            action = (args[0] if args else "").strip().lower()
-            targets = self._split_args(args[1:])
-            if action == "add" and targets:
-                added = []
-                removed_from_wl = []
-                for t in targets:
-                    self.blacklist_groups.add(t)
-                    added.append(t)
-                    # 互斥: 加黑名单 → 从白名单自动移除
-                    if t in self.allow_users:
-                        self.allow_users.discard(t)
-                        removed_from_wl.append(t)
-                self._save_whitelist_file()  # 持久化
-                note = f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
-                await reply(f"✅ 已加入黑名单群: {', '.join(added)}{note}\n当前黑名单 ({len(self.blacklist_groups)}): {', '.join(sorted(self.blacklist_groups)) or '(空)'}")
-            elif action == "del" and targets:
-                removed = [t for t in targets if t in self.blacklist_groups]
-                missing = [t for t in targets if t not in self.blacklist_groups]
-                for t in removed:
-                    self.blacklist_groups.discard(t)
-                self._save_whitelist_file()  # 持久化
-                msg = f"✅ 已移出黑名单群: {', '.join(removed) or '(无)'}"
-                if missing:
-                    msg += f"\n⚠️ 不在黑名单: {', '.join(missing)}"
-                msg += f"\n当前黑名单 ({len(self.blacklist_groups)}): {', '.join(sorted(self.blacklist_groups)) or '(空)'}"
-                await reply(msg)
-            elif action == "list":
-                await reply(f"当前黑名单群 ({len(self.blacklist_groups)}):\n" + ("\n".join(f"- {g}" for g in sorted(self.blacklist_groups)) if self.blacklist_groups else "(空)"))
-            else:
-                await reply("用法: /blacklist add <群ID> [群ID...] | del <群ID> [群ID...] | list")
-            return
-
-        if cmd == "/at":
-            mode = (args[0] if args else "").strip().lower()
-            if mode in ("on", "1", "true"):
-                self.require_at_mention = True
-                self._save_whitelist_file()  # 持久化
-                await reply("✅ 群聊已设为必须 @ 才回复")
-            elif mode in ("off", "0", "false"):
-                self.require_at_mention = False
-                self._save_whitelist_file()  # 持久化
-                await reply("✅ 群聊已解除必须 @ (白名单群内非@也可触发)")
-            else:
-                await reply(f"用法: /at on|off\n当前: {'on (必须@)' if self.require_at_mention else 'off (不必@)'}")
-            return
+        # 注册表遍历分发: 新命令在 self._filehelper_commands 登记后, 自动进 /help + 可执行
+        for usage, _desc, handler in self._filehelper_commands:
+            cmd_name = usage.split()[0].lower()
+            if cmd == cmd_name:
+                try:
+                    return await handler(args, reply)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[WPP FILEHELPER] 命令 {cmd} 执行失败: {e}")
+                    await reply(f"命令 {cmd} 执行失败: {e}")
+                    return
 
         await reply(f"未知命令: {cmd}\n用 /help 查看全部命令。")
 
@@ -1014,6 +890,71 @@ class WppPlatformAdapter(Platform):
             return
 
         await reply("用法: /group add <群ID> [群ID...] | /group del <群ID> [群ID...] | /group list")
+
+    async def _handle_blacklist_command(self, args: list[str], reply) -> None:
+        """/blacklist add|del|list — 黑名单群管理 (批量, 与白名单互斥)。"""
+        action = (args[0] if args else "").strip().lower()
+        targets = self._split_args(args[1:])
+        if action == "add" and targets:
+            added = []
+            removed_from_wl = []
+            for t in targets:
+                self.blacklist_groups.add(t)
+                added.append(t)
+                # 互斥: 加黑名单 → 从白名单自动移除
+                if t in self.allow_users:
+                    self.allow_users.discard(t)
+                    removed_from_wl.append(t)
+            self._save_whitelist_file()  # 持久化
+            note = f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
+            await reply(f"✅ 已加入黑名单群: {', '.join(added)}{note}\n当前黑名单 ({len(self.blacklist_groups)}): {', '.join(sorted(self.blacklist_groups)) or '(空)'}")
+        elif action == "del" and targets:
+            removed = [t for t in targets if t in self.blacklist_groups]
+            missing = [t for t in targets if t not in self.blacklist_groups]
+            for t in removed:
+                self.blacklist_groups.discard(t)
+            self._save_whitelist_file()  # 持久化
+            msg = f"✅ 已移出黑名单群: {', '.join(removed) or '(无)'}"
+            if missing:
+                msg += f"\n⚠️ 不在黑名单: {', '.join(missing)}"
+            msg += f"\n当前黑名单 ({len(self.blacklist_groups)}): {', '.join(sorted(self.blacklist_groups)) or '(空)'}"
+            await reply(msg)
+        elif action == "list":
+            await reply(f"当前黑名单群 ({len(self.blacklist_groups)}):\n" + ("\n".join(f"- {g}" for g in sorted(self.blacklist_groups)) if self.blacklist_groups else "(空)"))
+        else:
+            await reply("用法: /blacklist add <群ID> [群ID...] | del <群ID> [群ID...] | list")
+
+    async def _handle_mode_command(self, args: list[str], reply) -> None:
+        """/mode atbot|none|all — 群回复模式。"""
+        mode = (args[0] if args else "").strip().lower()
+        if mode not in ("atbot", "none", "all"):
+            await reply("用法: /mode atbot|none|all\natbot=只回@机器人的群消息 / none=忽略群消息 / all=群消息都回\n当前: " + self.group_reply)
+            return
+        self.group_reply = mode
+        self._save_whitelist_file()  # 持久化
+        await reply(f"✅ 群消息回复模式已设为: {mode}\n(atbot=只回@ / none=忽略群 / all=都回)")
+
+    async def _handle_at_command(self, args: list[str], reply) -> None:
+        """/at on|off — 群聊是否必须 @ 才回复。"""
+        mode = (args[0] if args else "").strip().lower()
+        if mode in ("on", "1", "true"):
+            self.require_at_mention = True
+            self._save_whitelist_file()  # 持久化
+            await reply("✅ 群聊已设为必须 @ 才回复")
+        elif mode in ("off", "0", "false"):
+            self.require_at_mention = False
+            self._save_whitelist_file()  # 持久化
+            await reply("✅ 群聊已解除必须 @ (白名单群内非@也可触发)")
+        else:
+            await reply(f"用法: /at on|off\n当前: {'on (必须@)' if self.require_at_mention else 'off (不必@)'}")
+
+    async def _handle_help_command(self, args: list[str], reply) -> None:
+        """/help — 自动遍历命令注册表生成帮助 (新命令自动进 help)。"""
+        lines = ["【WPP 命令】"]
+        for usage, desc, _handler in self._filehelper_commands:
+            # 对齐显示: usage 补空格到 30 字符
+            lines.append(f"{usage:<30}  {desc}")
+        await reply("\n".join(lines))
 
     def _is_allowed(self, from_wxid: str, is_group: bool, chatroom_id: str, content: str, recipient_id: str = "") -> bool:
         """白名单 + 群消息策略判断:
