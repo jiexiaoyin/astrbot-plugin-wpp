@@ -195,12 +195,22 @@ class WppPlatformAdapter(Platform):
         self.allow_users = {u.strip() for u in allow_str.split(",") if u.strip()}
         # 群消息回复模式: atbot / none / all
         self.group_reply = str(platform_config.get("wpp_group_reply", "atbot") or "atbot")
+        # 群聊是否必须 @ 才回复 (默认 False = 白名单群内非@也触发; 仿 wpp-openclaw requireAtMention)
+        self.require_at_mention = False
+        # 黑名单群 (永远不回复, filehelper 命令管理)
+        self.blacklist_groups: set[str] = set()
         # filehelper 白名单持久化: 插件目录 wpp_whitelist.json (filehelper 命令改内存+写文件, 重启不丢)
-        #   启动时合并文件白名单到内存 (config 为基础 + 文件增量)
+        #   启动时合并文件配置到内存 (config 为基础 + 文件增量)
         self._whitelist_file = self._get_whitelist_file_path()
-        file_allow = self._load_whitelist_file()
-        if file_allow:
-            self.allow_users.update(file_allow)
+        persisted = self._load_whitelist_file()
+        if persisted.get("allow_users"):
+            self.allow_users.update(persisted["allow_users"])
+        if persisted.get("group_reply"):
+            self.group_reply = persisted["group_reply"]
+        if persisted.get("blacklist_groups"):
+            self.blacklist_groups = set(persisted["blacklist_groups"])
+        if persisted.get("require_at_mention") is not None:
+            self.require_at_mention = bool(persisted["require_at_mention"])
 
         self._api = WppClient(self.base_url, self.auth_token)
         self._runner = None
@@ -636,32 +646,51 @@ class WppPlatformAdapter(Platform):
         from pathlib import Path
         return str(Path(__file__).resolve().parent / "wpp_whitelist.json")
 
-    def _load_whitelist_file(self) -> set[str]:
-        """读取持久化白名单文件 (filehelper 命令写入的增量白名单)。"""
+    def _load_whitelist_file(self) -> dict:
+        """读取持久化运行时配置 (filehelper 命令写入的增量白名单/黑名单/群策略)。
+
+        返回 dict: {"allow_users": set, "group_reply": str, "blacklist_groups": set, "require_at_mention": bool}
+        文件缺失/损坏 → 空配置 (不影响 config 基础值)。
+        """
         try:
             from pathlib import Path
             p = Path(self._whitelist_file)
             if p.exists():
                 data = json.loads(p.read_text(encoding="utf-8"))
-                arr = data.get("allow_users", []) if isinstance(data, dict) else []
-                if isinstance(arr, list):
-                    return {str(u).strip() for u in arr if str(u).strip()}
+                if isinstance(data, dict):
+                    out: dict = {}
+                    arr = data.get("allow_users", [])
+                    if isinstance(arr, list):
+                        out["allow_users"] = {str(u).strip() for u in arr if str(u).strip()}
+                    if isinstance(data.get("group_reply"), str):
+                        out["group_reply"] = data["group_reply"]
+                    bl = data.get("blacklist_groups", [])
+                    if isinstance(bl, list):
+                        out["blacklist_groups"] = {str(g).strip() for g in bl if str(g).strip()}
+                    if data.get("require_at_mention") is not None:
+                        out["require_at_mention"] = bool(data["require_at_mention"])
+                    return out
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"[WPP] 读取白名单文件失败: {e}")
-        return set()
+            logger.warning(f"[WPP] 读取配置文件失败: {e}")
+        return {}
 
     def _save_whitelist_file(self) -> None:
-        """把当前内存白名单持久化到文件 (filehelper 命令改后调用)。"""
+        """把当前内存运行时配置持久化到文件 (filehelper 命令改后调用)。"""
         try:
             from pathlib import Path
             p = Path(self._whitelist_file)
             p.write_text(
-                json.dumps({"allow_users": sorted(self.allow_users)}, ensure_ascii=False, indent=2),
+                json.dumps({
+                    "allow_users": sorted(self.allow_users),
+                    "group_reply": self.group_reply,
+                    "blacklist_groups": sorted(self.blacklist_groups),
+                    "require_at_mention": self.require_at_mention,
+                }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            logger.info(f"[WPP] 白名单已持久化: {len(self.allow_users)} 项 → {self._whitelist_file}")
+            logger.info(f"[WPP] 运行时配置已持久化 → {self._whitelist_file}")
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"[WPP] 写白名单文件失败: {e}")
+            logger.warning(f"[WPP] 写配置文件失败: {e}")
 
     # ------------------------------------------------------------------ filehelper 命令
     async def _handle_filehelper_command(self, content: str, from_wxid: str, recipient_id: str) -> None:
@@ -686,12 +715,15 @@ class WppPlatformAdapter(Platform):
 
         if cmd == "/help":
             await reply(
-                "【WPP 白名单命令】\n"
+                "【WPP 命令】\n"
                 "/adduser <wxid>   授权私聊白名单\n"
                 "/deluser <wxid>   移除私聊白名单\n"
                 "/addgroup <群ID>  授权群聊白名单\n"
                 "/delgroup <群ID>  移除群聊白名单\n"
-                "/help             显示本帮助"
+                "/blacklist add|del|list <群ID>  黑名单群管理\n"
+                "/group atbot|none|all  群回复模式\n"
+                "/at on|off  群聊是否必须@才回复\n"
+                "/help        显示本帮助"
             )
             return
 
@@ -725,8 +757,14 @@ class WppPlatformAdapter(Platform):
                 await reply("用法: /addgroup <群ID>\n示例: /addgroup xxxxxxxx@chatroom")
                 return
             self.allow_users.add(target)
+            # 互斥: 加白名单 → 从黑名单自动移除 (老板要求: 黑白名单不能同时存在)
+            if target in self.blacklist_groups:
+                self.blacklist_groups.discard(target)
+                removed_note = f"\n(已自动从黑名单移除 {target})"
+            else:
+                removed_note = ""
             self._save_whitelist_file()  # 持久化 (重启不丢)
-            await reply(f"✅ 已授权群聊白名单: {target}\n当前群 ({sum(1 for u in self.allow_users if u.endswith('@chatroom'))}): {', '.join(sorted(u for u in self.allow_users if u.endswith('@chatroom'))) or '(空)'}")
+            await reply(f"✅ 已授权群聊白名单: {target}{removed_note}\n当前群 ({sum(1 for u in self.allow_users if u.endswith('@chatroom'))}): {', '.join(sorted(u for u in self.allow_users if u.endswith('@chatroom'))) or '(空)'}")
             return
 
         if cmd == "/delgroup":
@@ -741,14 +779,68 @@ class WppPlatformAdapter(Platform):
                 await reply(f"❌ {target} 不在群聊白名单中")
             return
 
+        if cmd == "/group":
+            mode = (args[0] if args else "").strip().lower()
+            if mode not in ("atbot", "none", "all"):
+                await reply("用法: /group atbot|none|all\natbot=只回@机器人的群消息 / none=忽略群消息 / all=群消息都回\n当前: " + self.group_reply)
+                return
+            self.group_reply = mode
+            self._save_whitelist_file()  # 持久化
+            await reply(f"✅ 群消息回复模式已设为: {mode}\n(atbot=只回@ / none=忽略群 / all=都回)")
+            return
+
+        if cmd == "/blacklist":
+            action = (args[0] if args else "").strip().lower()
+            target = (args[1] if len(args) > 1 else "").strip()
+            if action == "add" and target:
+                self.blacklist_groups.add(target)
+                # 互斥: 加黑名单 → 从白名单自动移除 (老板要求: 黑白名单不能同时存在)
+                if target in self.allow_users:
+                    self.allow_users.discard(target)
+                    removed_note = f"\n(已自动从白名单移除 {target})"
+                else:
+                    removed_note = ""
+                self._save_whitelist_file()  # 持久化
+                await reply(f"✅ 已加入黑名单群: {target}{removed_note}\n当前黑名单 ({len(self.blacklist_groups)}): {', '.join(sorted(self.blacklist_groups)) or '(空)'}")
+            elif action == "del" and target:
+                if target in self.blacklist_groups:
+                    self.blacklist_groups.discard(target)
+                    self._save_whitelist_file()  # 持久化
+                    await reply(f"✅ 已移出黑名单群: {target}\n当前黑名单 ({len(self.blacklist_groups)}): {', '.join(sorted(self.blacklist_groups)) or '(空)'}")
+                else:
+                    await reply(f"❌ {target} 不在黑名单中")
+            elif action == "list":
+                await reply(f"当前黑名单群 ({len(self.blacklist_groups)}): {', '.join(sorted(self.blacklist_groups)) or '(空)'}")
+            else:
+                await reply("用法: /blacklist add <群ID> | del <群ID> | list")
+            return
+
+        if cmd == "/at":
+            mode = (args[0] if args else "").strip().lower()
+            if mode in ("on", "1", "true"):
+                self.require_at_mention = True
+                self._save_whitelist_file()  # 持久化
+                await reply("✅ 群聊已设为必须 @ 才回复")
+            elif mode in ("off", "0", "false"):
+                self.require_at_mention = False
+                self._save_whitelist_file()  # 持久化
+                await reply("✅ 群聊已解除必须 @ (白名单群内非@也可触发)")
+            else:
+                await reply(f"用法: /at on|off\n当前: {'on (必须@)' if self.require_at_mention else 'off (不必@)'}")
+            return
+
         await reply(f"未知命令: {cmd}\n用 /help 查看全部命令。")
 
     def _is_allowed(self, from_wxid: str, is_group: bool, chatroom_id: str, content: str, recipient_id: str = "") -> bool:
         """白名单 + 群消息策略判断:
         - 私聊: from_wxid 在 allow_users 才放行 (allow_users 空则全放行)
         - 群: 按 group_reply 策略 (atbot=被@才放行 / none=忽略 / all=全放行)
+        - 黑名单群: 永远拒绝 (优先于白名单)
         """
         if is_group:
+            # 黑名单群: 永远不回复 (filehelper /blacklist 管理)
+            if chatroom_id and chatroom_id in self.blacklist_groups:
+                return False
             # 群白名单: 白名单里的群 (allow_users 含 @chatroom) 优先检查
             # 若配置了白名单且群不在白名单 → 忽略 (与私聊一致)
             if self.allow_users:
@@ -758,6 +850,9 @@ class WppPlatformAdapter(Platform):
                 if has_group_in_whitelist and not group_whitelisted:
                     return False
             if self.group_reply == "none":
+                return False
+            # require_at_mention: 非@消息直接拒绝 (即使 group_reply=all 也拦截), 仿 wpp-openclaw
+            if self.require_at_mention and "@" not in content:
                 return False
             if self.group_reply == "all":
                 return True
