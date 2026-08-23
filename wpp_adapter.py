@@ -195,6 +195,12 @@ class WppPlatformAdapter(Platform):
         self.allow_users = {u.strip() for u in allow_str.split(",") if u.strip()}
         # 群消息回复模式: atbot / none / all
         self.group_reply = str(platform_config.get("wpp_group_reply", "atbot") or "atbot")
+        # filehelper 白名单持久化: 插件目录 wpp_whitelist.json (filehelper 命令改内存+写文件, 重启不丢)
+        #   启动时合并文件白名单到内存 (config 为基础 + 文件增量)
+        self._whitelist_file = self._get_whitelist_file_path()
+        file_allow = self._load_whitelist_file()
+        if file_allow:
+            self.allow_users.update(file_allow)
 
         self._api = WppClient(self.base_url, self.auth_token)
         self._runner = None
@@ -623,6 +629,40 @@ class WppPlatformAdapter(Platform):
             old = self._seen_msg_ids_order.pop(0)
             self._seen_msg_ids.discard(old)
 
+    # ------------------------------------------------------------------ 白名单持久化
+    @staticmethod
+    def _get_whitelist_file_path() -> str:
+        """白名单持久化文件路径 (插件目录 wpp_whitelist.json)。"""
+        from pathlib import Path
+        return str(Path(__file__).resolve().parent / "wpp_whitelist.json")
+
+    def _load_whitelist_file(self) -> set[str]:
+        """读取持久化白名单文件 (filehelper 命令写入的增量白名单)。"""
+        try:
+            from pathlib import Path
+            p = Path(self._whitelist_file)
+            if p.exists():
+                data = json.loads(p.read_text(encoding="utf-8"))
+                arr = data.get("allow_users", []) if isinstance(data, dict) else []
+                if isinstance(arr, list):
+                    return {str(u).strip() for u in arr if str(u).strip()}
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] 读取白名单文件失败: {e}")
+        return set()
+
+    def _save_whitelist_file(self) -> None:
+        """把当前内存白名单持久化到文件 (filehelper 命令改后调用)。"""
+        try:
+            from pathlib import Path
+            p = Path(self._whitelist_file)
+            p.write_text(
+                json.dumps({"allow_users": sorted(self.allow_users)}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info(f"[WPP] 白名单已持久化: {len(self.allow_users)} 项 → {self._whitelist_file}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] 写白名单文件失败: {e}")
+
     # ------------------------------------------------------------------ filehelper 命令
     async def _handle_filehelper_command(self, content: str, from_wxid: str, recipient_id: str) -> None:
         """处理文件传输助手命令: /help /adduser /deluser /addgroup /delgroup。
@@ -661,6 +701,7 @@ class WppPlatformAdapter(Platform):
                 await reply("用法: /adduser <wxid>\n示例: /adduser wxid_abc123")
                 return
             self.allow_users.add(target)
+            self._save_whitelist_file()  # 持久化 (重启不丢)
             await reply(f"✅ 已授权私聊白名单: {target}\n当前 ({len(self.allow_users)}): {', '.join(sorted(self.allow_users))}")
             return
 
@@ -671,6 +712,7 @@ class WppPlatformAdapter(Platform):
                 return
             if target in self.allow_users:
                 self.allow_users.discard(target)
+                self._save_whitelist_file()  # 持久化 (重启不丢)
                 remaining = ", ".join(sorted(self.allow_users))
                 await reply(f"✅ 已移除私聊白名单: {target}\n当前 ({len(self.allow_users)}): {remaining or '(空)'}")
             else:
@@ -683,6 +725,7 @@ class WppPlatformAdapter(Platform):
                 await reply("用法: /addgroup <群ID>\n示例: /addgroup xxxxxxxx@chatroom")
                 return
             self.allow_users.add(target)
+            self._save_whitelist_file()  # 持久化 (重启不丢)
             await reply(f"✅ 已授权群聊白名单: {target}\n当前群 ({sum(1 for u in self.allow_users if u.endswith('@chatroom'))}): {', '.join(sorted(u for u in self.allow_users if u.endswith('@chatroom'))) or '(空)'}")
             return
 
