@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 *.bak
 .DS_Store
+
+# 多账号运行时数据 (每账号白名单/webhook token, 含实例标识, 不入库)
+accounts/
+.webhook_token

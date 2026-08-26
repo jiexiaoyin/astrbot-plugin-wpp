@@ -50,12 +50,13 @@ class WppPlugin(Star):
         payload = await request.json(default={})
         token = (payload or {}).get("token", "")
         base_url = (payload or {}).get("base_url", "")
+        instance_id = (payload or {}).get("instance_id", "")
         if not token:
             return error_response("缺少 X-Access-Token")
 
-        # base_url 可选; 缺省从已注册的 wpp 适配器配置读取 (避免硬编码 127.0.0.1:18062)
+        # base_url 可选; 缺省从已注册的 wpp 适配器配置读取 (多账号 v0.2.0: 支持按 instance_id)
         if not base_url:
-            base_url = self._get_wpp_base_url()
+            base_url = self._get_wpp_base_url(instance_id or None)
         base_url = str(base_url).rstrip("/")
 
         client = WppClient(base_url, token)
@@ -103,17 +104,36 @@ class WppPlugin(Star):
         finally:
             await client.close()
 
-    def _get_wpp_base_url(self) -> str:
-        """从已注册的 wpp 平台适配器配置读取 base_url。"""
+    def _get_wpp_instances(self) -> list:
+        """返回所有已注册的 wpp 平台适配器实例 (多账号 v0.2.0)。
+
+        多实例时按 meta().id 区分 (instance_id)。单实例兼容: 返回 [实例] 或 []。
+        """
         try:
             pm = getattr(self.context, "platform_manager", None)
             insts = getattr(pm, "platform_insts", []) if pm else []
-            for inst in insts:
-                if getattr(inst, "meta", None) and inst.meta().name == "wpp":
-                    return str(getattr(inst, "base_url", "") or "http://127.0.0.1:18062")
+            return [
+                inst for inst in insts
+                if getattr(inst, "meta", None) and inst.meta().name == "wpp"
+            ]
         except Exception:  # noqa: BLE001
-            pass
-        return "http://127.0.0.1:18062"
+            return []
+
+    def _get_wpp_base_url(self, instance_id: str | None = None) -> str:
+        """从已注册的 wpp 平台适配器配置读取 base_url。
+
+        instance_id 指定实例 (meta().id); 缺省取第一个 (单实例兼容)。
+        """
+        try:
+            insts = self._get_wpp_instances()
+            if not insts:
+                return "http://127.0.0.1:18062"
+            for inst in insts:
+                if instance_id and getattr(inst, "instance_id", "") == instance_id:
+                    return str(getattr(inst, "base_url", "") or "http://127.0.0.1:18062")
+            return str(getattr(insts[0], "base_url", "") or "http://127.0.0.1:18062")
+        except Exception:  # noqa: BLE001
+            return "http://127.0.0.1:18062"
 
     @staticmethod
     async def _fetch_profile(client) -> dict | None:
@@ -147,26 +167,27 @@ class WppPlugin(Star):
 
     @filter.command("wpp_status")
     async def wpp_status(self, event: AstrMessageEvent):
-        """查询 WPP 账号在线状态。"""
+        """查询 WPP 账号在线状态 (多账号 v0.2.0: 支持 /wpp_status <实例id>)。"""
         # 从已注册的适配器实例拿凭证 (遍历平台管理器里的 wpp 实例)
-        platform = None
-        pm = getattr(self.context, "platform_manager", None)
-        insts = getattr(pm, "platform_insts", []) if pm else []
-        for inst in insts:
-            if getattr(inst, "meta", None) and inst.meta().name == "wpp":
-                platform = inst
-                break
-
-        if platform is None:
+        insts = self._get_wpp_instances()
+        if not insts:
             yield event.plain_result(
                 "WPP 适配器未启动。请先在 Dashboard 平台适配器里添加并启动 '微信 WPP'。"
             )
             return
 
+        # 支持 /wpp_status <实例id> 指定实例; 缺省第一个 (单实例兼容)
+        target_id = ""
+        parts = event.message_str.strip().split()
+        if len(parts) > 1:
+            target_id = parts[1].strip()
+        platform = next((i for i in insts if getattr(i, "instance_id", "") == target_id), insts[0]) if target_id else insts[0]
+
         online = await platform._api.get_online_info()
         longlink = await platform._api.get_long_link_status()
 
-        parts = ["【WPP 账号状态】"]
+        inst_label = getattr(platform, "instance_id", "wpp")
+        parts = [f"【WPP 账号状态 (实例 {inst_label})】"]
         if online.get("Code") == 0:
             parts.append(f"✅ 在线: {online.get('Data')}")
         else:

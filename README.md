@@ -93,19 +93,39 @@ docker restart astrbot
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `wpp_base_url` | ✅ | WPP API 地址（如 `http://<vendor-ip>:28062`）|
-| `wpp_auth_token` | ✅ | WPP X-Access-Token（= authcode）|
-| `wpp_allow_users` | — | 白名单 wxid（逗号分隔），空则所有私聊触发 |
-| `wpp_group_reply` | — | 群消息策略: `atbot` / `none` / `all` |
-| `webhook_host` | — | webhook 监听地址（默认 `0.0.0.0`）|
-| `webhook_port` | — | webhook 监听端口（默认 `6199`）|
-| `webhook_path` | — | webhook 路径（默认 `/wpp/webhook`）|
-| `webhook_public_url` | — | **webhook 公网回调地址**（如 `http://<astrbot公网>:6199`），注册给 vendor 用。留空则用 `webhook_host:port` |
+| `wpp_auth_token` | 二选一 | **单账号模式**：WPP X-Access-Token（= authcode）|
+| `wpp_accounts` | 二选一 | **多账号模式**：账号列表 JSON（见下方多账号章节）|
+| `wpp_allow_users` | — | **单账号模式**白名单 wxid（逗号分隔），空则所有私聊触发 |
+| `wpp_group_reply` | — | **单账号模式**群消息策略: `atbot` / `none` / `all` |
+| `wpp_ws_url` | — | WS 实时通道地址（如 `wss://<vendor-domain>/ws/sync`），主通道 |
+| `wpp_webhook_enabled` | — | 是否启用 webhook 兜底（默认 `false`，仅 WS）|
+
+> ⚠️ **单账号 vs 多账号**：配置 `wpp_auth_token`（+ 顶层白名单）= 单账号；配置 `wpp_accounts`（JSON 列表）= 多账号。两者只用一个。
+
+### 👥 多账号（单实例内, 通过 authcode 隔离）
+一个 wpp 适配器实例可管理多个微信账号，**同一 vendor 地址**（`wpp_base_url` + `wpp_ws_url`），通过不同 `authcode` 隔离。每个账号独立：
+- WS 实时连接（用该账号 authcode 鉴权）
+- 白名单/群策略/黑名单（`accounts/<account_id>/wpp_whitelist.json` 独立持久化）
+- filehelper 命令（各自管理自己的白名单）
+- 消息去重 / 机器人身份
+
+`wpp_accounts` 配置示例：
+```json
+[
+  {"id": "xieyin", "authcode": "<authcode_账号1>", "allow_users": "<wxid_白名单>", "group_reply": "atbot"},
+  {"id": "yirong", "authcode": "<authcode_账号2>", "allow_users": "", "group_reply": "all", "blacklist_groups": "<群id>@chatroom"},
+  {"id": "test",  "authcode": "xxx", "require_at_mention": true}
+]
+```
+每个账号字段：`id`（唯一）、`authcode`（必填）、`allow_users`/`group_reply`/`blacklist_groups`/`require_at_mention`（可选，默认同单账号）。
+
+filehelper 命令输出带账号标识（如 `【WPP 命令 (账号 xieyin)】`），各账号命令互不影响。
 
 ### 换新环境的自动适配
 配置 `wpp_base_url` + `wpp_auth_token` 后，插件**自动**：
 1. 用新地址调所有 WPP API
 2. 用新 authcode 认证
-3. 注册 webhook 到新地址（`webhook_public_url` 或 fallback）
+3. WS 连接建立即拉全量离线 + 实时消息（主通道）
 4. 面板/UI 显示新地址
 
 > ⚠️ 前提：新 authcode 需在新 vendor 的 Redis 中为有效状态（`origin=local` + `enabled`），且新 vendor 能真实收发微信。详见 [DEPLOY.md](DEPLOY.md) 的接入清单。
