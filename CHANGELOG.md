@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.2.0 (2026-08-26) — WS 实时主通道 + 单实例多账号
+
+### WS 实时通道（主通道，webhook 退役）
+- **WS 实时主通道**：连 vendor `/ws/sync`（`wpp_ws_url`），连接即拉全量离线 + 实时消息，自动重连（指数退避 1s→30s）
+- **根因修复**：之前 vendor 长连接断无人连 WS → 消息进离线队列 → webhook 收不到。WS 客户端连上即恢复
+- **webhook 退役**：`wpp_webhook_enabled` 默认 false（WS 断时 webhook 也收不到，无保留价值）
+
+### 单实例多账号（v0.2.1 完善）
+- **`WppAccount` 类**：单实例内管理多个微信账号，同一 vendor 地址通过不同 `authcode` 隔离
+- **每账号独立**：WS 连接 / 白名单 / 群策略 / 黑名单 / 消息去重 / 机器人身份 / filehelper 命令
+- **`wpp_accounts` JSON 配置**：多账号模式；`wpp_auth_token` 单账号向后兼容
+- **白名单按账号隔离**：`accounts/<account_id>/wpp_whitelist.json`
+- **测试**：`tests/` 7 个 pytest（账号解析/隔离/回退）
+
+### 新增文件
+- `wpp_account.py` — WppAccount 类（账号级 WS + 白名单 + 消息处理）
+- `tests/test_multi_account.py` — 多账号架构测试
+
 ## v0.1.0 (2026-08-21)
 
 AstrBot 微信 WPP (WeChatPadPro) 平台适配器首个可用版本，已开源。

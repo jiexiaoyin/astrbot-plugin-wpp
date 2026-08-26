@@ -28,7 +28,7 @@ PLUGIN_NAME = "astrbot-plugin-wpp"
     name=PLUGIN_NAME,
     author="jiexiaoyin",
     desc="让微信成为 AstrBot 的一等平台 (WeChatPadPro)",
-    version="0.1.0",
+    version="0.2.0",
     repo="",
 )
 class WppPlugin(Star):

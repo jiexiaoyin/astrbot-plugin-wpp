@@ -4,11 +4,24 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 **让微信成为 AstrBot 的一等平台**：微信消息 → WPP vendor → 本适配器 → AstrBot 核心 (LLM/命令/插件)，回复自动回微信。
 
+> 🚀 **核心亮点**：**WS 实时主通道**（不断连、自动重连）+ **单实例多账号**（一个适配器管多个微信，通过 authcode 隔离）+ **全类型媒体**（图片/语音/文件/视频全部 AI 可读）+ **filehelper 命令**（文件助手发指令管理白名单）。
+
 ---
 
 ## ✨ 插件亮点
 
-### 全类型消息收发
+### 🔌 WS 实时主通道（稳定收消息）
+- **WS 实时连接**：连 vendor `/ws/sync`，连接即拉全量离线 + 实时消息，**不丢消息**
+- **自动重连**：断连指数退避（1s→30s），长时间无活动也不掉线
+- **webhook 已退役**：不再依赖 vendor 回调，WS 主通道更可靠
+
+### 👥 单实例多账号（一个插件管多个微信）
+- **同一 vendor 地址**（`wpp_base_url` + `wpp_ws_url`），通过不同 **authcode** 隔离账号
+- **每账号独立**：WS 连接 / 白名单 / 群策略 / 黑名单 / 去重 / 机器人身份 / filehelper 命令
+- **配置极简**：`wpp_accounts` JSON 列表，每个账号 `{id, authcode, allow_users, ...}`
+- 单账号向后兼容（`wpp_auth_token`）
+
+### 📦 全类型消息收发（AI 全能读懂）
 | 类型 | 处理 | 说明 |
 |---|---|---|
 | 文本 | 直接收发 | 最基础的对话 |
@@ -17,7 +30,7 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 | 文件 | 下载 + AI 读取 | `DownloadFileBinary` → `File` 组件，AI 可读 Excel/PDF |
 | 视频 | 分片下载 | `DownloadVideo` 分片 → `Video` 组件 |
 
-### 完善的接入能力
+### 🛡 完善的接入能力
 - **白名单**：仅白名单 wxid 触发 AI（防陌生人骚扰）
 - **群消息策略**：`atbot`（只回@机器人）/ `none` / `all`
 - **filehelper 白名单命令**：在文件传输助手里发指令管理白名单（仿 wpp-openclaw），三域统一 **add/del/list**
@@ -32,11 +45,10 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 - **自动心跳**：账号离线自动拉上线
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
 
-### 运维体验
+### 🖥 运维体验
 - **账号信息页面**：Dashboard 里查昵称/wxid/在线状态
-- **在线状态卡片**：平台状态实时显示
+- **在线状态卡片**：平台状态实时显示（多账号聚合）
 - **动态面板地址**：UI 显示实际配置的 vendor 地址（不硬编码）
-- **webhook 公网地址**：可配置回调 URL，vendor 消息可达
 
 ---
 
@@ -44,16 +56,21 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 ```
 [微信] ←→ [WPP vendor (WeChatPadPro)]
-                │ ① push → POST http://<astrbot公网>:6199/wpp/webhook
+                │ ① WS 实时通道 (wss://vendor/ws/sync?authcode=账号)
+                │    每账号一个独立 WS 连接 (通过 authcode 隔离)
                 ▼
 [astrbot 容器] astrbot-plugin-wpp (Platform 适配器)
+                │ WppAccount (每账号: WS 连接 + 白名单 + 去重 + 身份)
                 │ ② 解析 → WppMessageEvent → 事件总线
                 ▼
         AstrBot 核心 (LLM/命令/插件)
-                │ ③ event.send → WPP 发送 API (SendTxt/UploadImg...)
+                │ ③ event.send → 对应账号 WPP 发送 API (SendTxt/UploadImg...)
                 ▼
         微信收到回复
 ```
+
+- **主通道 = WS 实时连接**：连接建立即拉全量离线消息 + 实时推送，自动重连保活（webhook 已退役）
+- **多账号 = 单实例内多个 WppAccount**：同一 vendor 地址，每个账号独立 authcode + 独立 WS + 独立白名单
 
 ---
 
@@ -62,9 +79,11 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 | 文件 | 作用 |
 |---|---|
 | `main.py` | 插件入口 (Star) + Web API (账号信息查询) |
-| `wpp_adapter.py` | 平台适配器 (webhook + 消息转换 + 白名单 + 发送 + 心跳) |
-| `wpp_client.py` | WPP vendor HTTP API 封装 (retry + 超时) |
+| `wpp_adapter.py` | 平台适配器 (账号管理器 + 账号解析 + 生命周期 + 发送路由) |
+| `wpp_account.py` | WppAccount 类 (单个微信账号: WS 连接 + 白名单 + 消息处理 + filehelper) |
+| `wpp_client.py` | WPP vendor HTTP/WS API 封装 (retry + 超时) |
 | `wpp_event.py` | 消息事件 (重写 send 真正发送到微信) |
+| `tests/` | 多账号架构测试 (pytest) |
 | `pages/account-info/` | Dashboard 账号信息页面 |
 | `logo.png` | 插件 + 平台适配器图标 |
 
@@ -76,8 +95,8 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 # 1. 拷入 AstrBot 容器插件目录
 docker cp astrbot-plugin-wpp astrbot:/AstrBot/data/plugins/
 
-# 2. 容器内确认依赖 (aiohttp)
-docker exec astrbot sh -c 'python3 -c "import aiohttp" || pip install aiohttp'
+# 2. 容器内确认依赖 (aiohttp + websockets — WS 主通道必需)
+docker exec astrbot sh -c 'python3 -c "import aiohttp, websockets" || pip install aiohttp websockets'
 
 # 3. 重启 AstrBot 加载适配器
 docker restart astrbot
