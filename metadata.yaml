@@ -4,4 +4,3 @@ version: 0.1.0
 author: jiexiaoyin
 repo: https://github.com/jiexiaoyin/astrbot-plugin-wpp
 entry: main
-config_schema: config_schema.json

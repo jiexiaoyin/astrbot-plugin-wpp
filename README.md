@@ -66,7 +66,6 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 | `wpp_client.py` | WPP vendor HTTP API 封装 (retry + 超时) |
 | `wpp_event.py` | 消息事件 (重写 send 真正发送到微信) |
 | `pages/account-info/` | Dashboard 账号信息页面 |
-| `config_schema.json` | 平台配置模板 |
 | `logo.png` | 插件 + 平台适配器图标 |
 
 ---
