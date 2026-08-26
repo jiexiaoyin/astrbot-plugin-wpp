@@ -159,7 +159,7 @@ class WppAccount:
                     url = f"{url}?authcode={self.authcode}"
                 logger.info(f"[WPP:{self.account_id} WS] connecting: {self.ws_url}")
                 async with websockets.connect(
-                    url, ping_interval=20, ping_timeout=20, close_timeout=5, max_size=16 * 1024 * 1024
+                    url, ping_interval=20, ping_timeout=20, close_timeout=5, max_size=100 * 1024 * 1024
                 ) as ws:
                     delay = 1.0  # 连接成功重置退避
                     logger.info(f"[WPP:{self.account_id} WS] connected")
