@@ -141,6 +141,16 @@ WPP_CONFIG_METADATA = {
         "type": "string",
         "hint": "注册给 vendor 的 AstrBot 公网地址 (如 http://<host>:6199/wpp/webhook)。留空则用 webhook_host:port",
     },
+    "wpp_ws_url": {
+        "description": "WS 实时消息通道地址 (vendor /ws/sync)",
+        "type": "string",
+        "hint": "如 wss://<vendor-domain>/ws/sync (vendor 的 WebSocket 入口)。WS 连接建立即推全量离线+实时消息, 是主通道",
+    },
+    "wpp_webhook_enabled": {
+        "description": "是否启用 webhook 兜底通道",
+        "type": "boolean",
+        "hint": "默认 false=仅 WS (推荐)。true=额外开 webhook server + vendor 注册 (WS 断时 webhook 也收不到, 实际无用)",
+    },
 }
 
 
@@ -159,6 +169,8 @@ WPP_CONFIG_METADATA = {
         "webhook_path": "/wpp/webhook",
         "webhook_token": "",
         "webhook_public_url": "",
+        "wpp_ws_url": "",
+        "wpp_webhook_enabled": "false",
     },
     config_metadata=WPP_CONFIG_METADATA,
 )
@@ -189,6 +201,17 @@ class WppPlatformAdapter(Platform):
         # webhook HMAC secret (可选, 默认空=不验签; 需 vendor 侧配置一致才启用)
         self.webhook_secret = str(platform_config.get("webhook_secret", "") or "").strip()
         self.webhook_public_url = str(platform_config.get("webhook_public_url", "") or "").rstrip("/")
+
+        # WS 实时消息通道 (v1.0.1 2026-08-26): 默认连 vendor /ws/sync (接晓银长连接断,
+        #   webhook 收不到消息的根因是 vendor WS 无人连)。WS 连接建立即推全量离线消息 +
+        #   实时消息, 复用 _process_src 处理。留空=不启用 WS (纯 webhook 模式)。
+        self.ws_url = str(platform_config.get("wpp_ws_url", "") or "").strip()
+        self._ws_task: asyncio.Task | None = None
+
+        # webhook 开关 (v1.0.2 2026-08-26): WS 已是主通道 (连接即拉全量离线+实时消息),
+        #   webhook 在 WS 断时也收不到 (消息进离线队列), 已无保留价值。默认关闭只走 WS。
+        #   true=保留 webhook server + vendor 注册 (双通道兜底, 向后兼容)。
+        self.webhook_enabled = str(platform_config.get("wpp_webhook_enabled", "false") or "false").lower() in ("1", "true", "yes", "on")
 
         # 白名单配置: wpp_allow_users 逗号分隔 wxid; 空则默认允许所有人
         allow_str = str(platform_config.get("wpp_allow_users", "") or "").strip()
@@ -265,47 +288,52 @@ class WppPlatformAdapter(Platform):
         return stats
 
     async def run(self) -> None:
-        """启动 webhook server + 把回调 url 注册进 WPP vendor。"""
-        from aiohttp import web
+        """启动消息通道 (WS 主通道; webhook 可选兜底)。
 
-        app = web.Application()
-        app.router.add_post(self.webhook_path, self._handle_webhook)
-        app.router.add_get(self.webhook_path, self._handle_webhook_health)
-
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        self._server = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
-        await self._server.start()
-        logger.info(
-            f"[WPP] webhook server started at http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
-        )
-
+        v1.0.2 2026-08-26: WS 为主通道 (连接即拉全量离线+实时消息)。webhook 默认关闭
+        (wpp_webhook_enabled=false), 因为 WS 断时消息进离线队列 webhook 也收不到, 已无
+        保留价值。true=保留 webhook server + vendor 注册 (向后兼容)。
+        """
         # ① 自动登录流程: 查在线 → 不在线则出二维码
         await self._ensure_logged_in()
 
         # ①.5 提前刷新账号状态: self._self_wxid/_self_nickname 用于群@判断,
-        #     必须在 webhook 注册前就绪 (否则 vendor 推送第一条消息时昵称还没填上 → 群@被误过滤)
+        #     必须在消息处理前就绪 (否则第一条消息时昵称还没填上 → 群@被误过滤)
         await self._refresh_account_status()
 
-        # ② 把回调 url 注册进 WPP vendor (best-effort, 失败不阻塞)
-        # 优先用配置的 webhook_public_url (公网可达), 否则 fallback host:port
-        try:
-            if self.webhook_public_url:
-                callback_url = self.webhook_public_url + self.webhook_path
-            else:
-                callback_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
-            ok = await self._api.set_webhook(callback_url)
-            status = "OK" if ok else "FAILED"
-            logger.info(f"[WPP] register webhook to vendor: {status} url={callback_url}")
+        # ② 可选: webhook server + vendor 注册 (仅 wpp_webhook_enabled=true)
+        if self.webhook_enabled:
+            from aiohttp import web
 
-            # 业务回调 + StartAutoSync: 推完整消息 (只配 /Webhook/Set 只推空 Data)
-            # 参考 wpp-openclaw index.ts: setBusinessWebhook + startAutoSync
-            # P0-1: businessPath 也用带 token 的路径 (路径即密钥)
-            biz = await self._api.set_business_webhook(callback_url)
-            sync = await self._api.start_auto_sync(callback_url)
-            logger.info(f"[WPP] business webhook: {biz} | auto-sync: {sync} url={callback_url}")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"[WPP] register webhook to vendor failed: {e}")
+            app = web.Application()
+            app.router.add_post(self.webhook_path, self._handle_webhook)
+            app.router.add_get(self.webhook_path, self._handle_webhook_health)
+
+            self._runner = web.AppRunner(app)
+            await self._runner.setup()
+            self._server = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
+            await self._server.start()
+            logger.info(
+                f"[WPP] webhook server started at http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
+            )
+
+            # 把回调 url 注册进 WPP vendor (best-effort, 失败不阻塞)
+            try:
+                if self.webhook_public_url:
+                    callback_url = self.webhook_public_url + self.webhook_path
+                else:
+                    callback_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
+                ok = await self._api.set_webhook(callback_url)
+                status = "OK" if ok else "FAILED"
+                logger.info(f"[WPP] register webhook to vendor: {status} url={callback_url}")
+
+                biz = await self._api.set_business_webhook(callback_url)
+                sync = await self._api.start_auto_sync(callback_url)
+                logger.info(f"[WPP] business webhook: {biz} | auto-sync: {sync} url={callback_url}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[WPP] register webhook to vendor failed: {e}")
+        else:
+            logger.info("[WPP] webhook 已禁用 (wpp_webhook_enabled=false), 仅 WS 通道")
 
         # ③ 启动账号状态后台刷新任务 (供 get_stats / Dashboard 卡片展示)
         # P2-4: _refresh_account_status 已在 ①.5 调用过, 这里不再重复调用, 直接起循环任务
@@ -313,16 +341,50 @@ class WppPlatformAdapter(Platform):
         # ③.5 配置文件热更新: 外部修改 wpp_whitelist.json → 自动重载 (即时生效)
         self._reload_config_loop()
 
+        # ③.6 WS 实时消息通道: 配置了 wpp_ws_url 就启动 (连 vendor /ws/sync 收实时消息)
+        #   根因 (2026-08-26): vendor 长连接断了 webhook 收不到, 但 WS 客户端连上即
+        #   推全量离线+实时消息, 保活更可靠。webhook 保留作为双通道兜底。
+        if self.ws_url:
+            self._ws_task = asyncio.create_task(self._ws_client_loop())
+            logger.info(f"[WPP] WS 实时通道已启动: {self.ws_url}")
+        else:
+            logger.info("[WPP] wpp_ws_url 未配置, 仅 webhook 模式")
+
     async def _account_status_loop(self) -> None:
-        """后台循环: 每 60s 刷新账号在线状态缓存。"""
+        """后台循环: 每 30s 检查在线; 不在线但账号已登录 → 自动心跳拉起 (对齐 wpp-openclaw 保活)。
+
+        背景 (老板反馈 2026-08-26): 长时间无活动后断连 — 微信长连接有 idle 超时,
+        vendor 侧静默长连接会断, 插件纯 webhook 被动接收无感知。此循环由"只读检测"
+        升级为"检测+修复": GetOnlineInfo 显示 online=false 且 Code==0 (账号已登录)
+        时调 /Login/AutoHeartBeat 重新拉起长连接, 再复查。
+        """
         while True:
             try:
-                await asyncio.sleep(60)
-                await self._refresh_account_status()
+                await asyncio.sleep(30)  # 30s: 更快发现断链 (原 60s 只刷新状态)
+                online, resp = await self._api.is_online()
+                if online:
+                    await self._refresh_account_status()
+                    continue
+                # 账号已登录 (Code==0) 但长连接断了 → 自动心跳拉起
+                # (未登录 Code!=0 不要重复心跳, 只告警)
+                if resp.get("Code") == 0:
+                    hb = await self._api.auto_heartbeat()
+                    logger.info(f"[WPP] 长连接已断, 触发自动心跳拉起: {hb.get('Message')}")
+                    await asyncio.sleep(2)
+                    online2, _ = await self._api.is_online()
+                    if online2:
+                        logger.info("[WPP] 自动心跳拉起成功")
+                    else:
+                        logger.warning("[WPP] 自动心跳后仍不在线, 下次循环再试")
+                else:
+                    logger.warning(
+                        f"[WPP] 账号未登录 (Code={resp.get('Code')}), 需去 vendor 面板登录: "
+                        f"{self.base_url}"
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"[WPP] account status refresh failed: {e}")
+                logger.warning(f"[WPP] 保活循环异常: {e}")
 
     async def _refresh_account_status(self) -> None:
         """查在线状态 + 个人资料, 更新 self._account_status 缓存。"""
@@ -407,6 +469,50 @@ class WppPlatformAdapter(Platform):
             f"[WPP] ============================================================"
         )
 
+    # ------------------------------------------------------------------ WS 实时通道
+    async def _ws_client_loop(self) -> None:
+        """WS 实时消息客户端 (连 vendor /ws/sync, 复用 _process_src 处理)。
+
+        2026-08-26: 接晓银长连接断的根因是 vendor WS 无人连 → 消息全进离线队列。
+        WS 连接建立即推全量离线消息 + 实时消息, 保活更可靠。自动重连 (指数退避)。
+        """
+        import websockets
+
+        delay = 1.0
+        while True:
+            try:
+                # 构造带 authcode 的 URL (vendor WS 鉴权: ?authcode=xxx)
+                url = self.ws_url
+                if self.auth_token and "?" not in url:
+                    url = f"{url}?authcode={self.auth_token}"
+                logger.info(f"[WPP WS] connecting: {self.ws_url}")
+                async with websockets.connect(
+                    url, ping_interval=20, ping_timeout=20, close_timeout=5, max_size=16 * 1024 * 1024
+                ) as ws:
+                    delay = 1.0  # 连接成功重置退避
+                    logger.info("[WPP WS] connected")
+                    async for raw in ws:
+                        try:
+                            payload = json.loads(raw)
+                        except Exception:  # noqa: BLE001
+                            continue
+                        # connection_ready / sync_update 等控制消息跳过
+                        dtype = (payload.get("Data") or {}).get("type")
+                        if dtype in ("connection_ready", "sync_update"):
+                            continue
+                        # 解析消息并复用 _process_src (白名单/去重/At注入/媒体下载)
+                        for src in self._extract_all_msg_src(payload):
+                            try:
+                                await self._process_src(src)
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning(f"[WPP WS] _process_src failed: {e}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[WPP WS] 连接断开/异常, {delay}s 后重连: {e}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)  # 指数退避 1s→30s 封顶
+
     async def terminate(self) -> None:
         """清理: 状态刷新任务 + webhook server + API session (P1-4 合并重复 terminate)。"""
         if self._status_task:
@@ -419,6 +525,12 @@ class WppPlatformAdapter(Platform):
             self._reload_task.cancel()
             try:
                 await self._reload_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        if self._ws_task:
+            self._ws_task.cancel()
+            try:
+                await self._ws_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         if self._runner:
@@ -1259,6 +1371,17 @@ class WppPlatformAdapter(Platform):
         out: list[dict] = []
         data = payload.get("Data")
 
+        # 形态 A0: WS 实时通道消息 (Data.data.messages) — vendor /ws/sync 推送结构
+        #   {"Code":0,"Data":{"data":{"count":N,"messages":[{sender_id,recipient_id,content,type,...}],"schema":"..."},"type":"sync_message"}}
+        if not out and isinstance(data, dict):
+            data_inner = data.get("data")
+            if isinstance(data_inner, dict):
+                for kk in ("messages", "items"):
+                    arr = data_inner.get(kk)
+                    if isinstance(arr, list):
+                        for item in arr:
+                            if isinstance(item, dict):
+                                out.append(item)
         # 形态 A: v1 messages / items 数组
         if isinstance(data, dict):
             for kk in ("messages", "items"):
