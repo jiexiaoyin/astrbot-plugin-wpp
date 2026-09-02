@@ -1,10 +1,38 @@
 # astrbot-plugin-wpp
 
+**AstrBot 微信 WPP (WeChatPadPro) 平台适配器 — 让微信成为 AstrBot 的一等平台**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![AstrBot](https://img.shields.io/badge/AstrBot-v4.x-purple)](https://github.com/Soulter/AstrBot)
+[![GitHub stars](https://img.shields.io/github/stars/jiexiaoyin/astrbot-plugin-wpp?style=social)](https://github.com/jiexiaoyin/astrbot-plugin-wpp/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/jiexiaoyin/astrbot-plugin-wpp?style=social)](https://github.com/jiexiaoyin/astrbot-plugin-wpp/network)
+[![Open Issues](https://img.shields.io/github/issues/jiexiaoyin/astrbot-plugin-wpp)](https://github.com/jiexiaoyin/astrbot-plugin-wpp/issues)
+[![Last commit](https://img.shields.io/github/last-commit/jiexiaoyin/astrbot-plugin-wpp)](https://github.com/jiexiaoyin/astrbot-plugin-wpp/commits/master)
+
 AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 **让微信成为 AstrBot 的一等平台**：微信消息 → WPP vendor → 本适配器 → AstrBot 核心 (LLM/命令/插件)，回复自动回微信。
 
 > 🚀 **核心亮点**：**WS 实时主通道**（不断连、自动重连）+ **单实例多账号**（一个适配器管多个微信，通过 authcode 隔离）+ **全类型媒体**（图片/语音/文件/视频全部 AI 可读）+ **filehelper 命令**（文件助手发指令管理白名单）。
+
+---
+
+## 🔗 相关项目
+
+本项目是 WeChatPadPro 跨平台适配插件生态的一部分:
+
+| 项目 | 平台 | 语言 | 状态 |
+|---|---|---|---|
+| **[wpp-openclaw](https://github.com/jiexiaoyin/wpp-openclaw)** | OpenClaw | TypeScript | ✅ 活跃维护 |
+| **[wpp-hermes](https://github.com/jiexiaoyin/wpp-hermes)** | Hermes Agent | Python 3 | ✅ 活跃维护 |
+| **[astrbot-plugin-wpp](https://github.com/jiexiaoyin/astrbot-plugin-wpp)** (本仓库) | AstrBot | Python 3 | ✅ 活跃维护 |
+
+三个仓库覆盖同一 vendor API,根据 agent 平台选择:
+
+- 想用 **OpenClaw gateway** 的 LLM → [wpp-openclaw](https://github.com/jiexiaoyin/wpp-openclaw)
+- 想用 **Hermes Agent** → [wpp-hermes](https://github.com/jiexiaoyin/wpp-hermes)
+- 想用 **AstrBot** 的多平台架构 → 本仓库 (`astrbot-plugin-wpp`)
 
 ---
 
