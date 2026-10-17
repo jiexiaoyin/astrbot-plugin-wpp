@@ -12,12 +12,16 @@
   2. 白名单里存在群 ID, 且本群不在白名单 → 拒绝
   3. group_reply == none → 拒绝 (硬开关, proactive_groups 也不能绕过)
   4. 已 @ 机器人 → 放行 (正常唤醒)
-  5. 群在 proactive_groups → 放行 (未 @ 也放行, 覆盖 require_at_mention)
+  5. 群在白名单或 proactive_groups → 放行 (未 @ 也放行, 覆盖 require_at_mention)
   6. require_at_mention 且未 @ → 拒绝
   7. group_reply == all → 放行 (观察模式, 不唤醒)
   8. 其他 → 拒绝
   私聊:
   9. 空白名单 = 全部放行; 否则只放行白名单
+
+**主动回复与群白名单共用同一份列表**: `allow_users` 里的 `@chatroom`
+条目天然就是主动候选群, 不需要再复制到 `proactive_groups`; 后者仅用于
+未配置群白名单时的显式补充 (或保留历史配置)。
 """
 
 from __future__ import annotations
@@ -55,6 +59,31 @@ class Admission:
     reason: str = ""
 
 
+def group_whitelist(policy: PolicySnapshot) -> set[str]:
+    """返回白名单中的群 ID (allow_users 里以 @chatroom 结尾的项)。"""
+    return {
+        str(group).strip()
+        for group in policy.allow_users
+        if str(group).strip().endswith("@chatroom")
+    }
+
+
+def effective_proactive_groups(policy: PolicySnapshot) -> set[str]:
+    """主动候选群 = 显式 proactive_groups ∪ 群白名单。
+
+    生产主动回复与白名单共用同一份群列表: 群进入白名单即视为 opt-in
+    未 @ 观察, 无需再复制到 proactive_groups。显式列表继续保留, 便于
+    未配置群白名单时单独 opt-in, 也不破坏历史配置。
+    """
+    groups = {
+        str(group).strip()
+        for group in policy.proactive_groups
+        if str(group).strip()
+    }
+    groups.update(group_whitelist(policy))
+    return groups
+
+
 def classify(
     policy: PolicySnapshot,
     from_wxid: str,
@@ -90,7 +119,9 @@ def classify(
             safe_str(policy.self_nickname),
             at_list,
         )
-        proactive = bool(chatroom_id) and chatroom_id in policy.proactive_groups
+        proactive = bool(chatroom_id) and chatroom_id in effective_proactive_groups(
+            policy
+        )
 
         if at_me:
             return Admission(True, at_me=True, proactive=proactive, reason="at_me")
@@ -130,4 +161,11 @@ def is_allowed(
     ).allowed
 
 
-__all__ = ["Admission", "PolicySnapshot", "classify", "is_allowed"]
+__all__ = [
+    "Admission",
+    "PolicySnapshot",
+    "classify",
+    "effective_proactive_groups",
+    "group_whitelist",
+    "is_allowed",
+]

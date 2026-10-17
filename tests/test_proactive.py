@@ -53,6 +53,28 @@ class TestProactivePolicy(unittest.TestCase):
         p = snap(proactive_groups={"g1@chatroom"})
         self.assertFalse(policy.is_allowed(p, "wxid_u", True, "g2@chatroom", "随便聊聊"))
 
+    def test_group_whitelist_is_automatically_proactive(self):
+        """生产主动回复与群白名单共用: 进白名单即放行未 @ 消息。"""
+        p = snap(allow_users={"g1@chatroom"})
+        d = policy.classify(p, "wxid_u", True, "g1@chatroom", "随便聊聊")
+        self.assertTrue(d.allowed)
+        self.assertTrue(d.proactive)
+        self.assertFalse(d.at_me)
+        self.assertEqual(d.reason, "proactive")
+        self.assertEqual(
+            policy.effective_proactive_groups(p), {"g1@chatroom"}
+        )
+
+    def test_private_whitelist_does_not_make_group_proactive(self):
+        p = snap(allow_users={"wxid_u"})
+        self.assertFalse(policy.is_allowed(p, "wxid_u", True, "g1@chatroom", "随便聊聊"))
+
+    def test_explicit_proactive_does_not_bypass_group_whitelist(self):
+        p = snap(allow_users={"g1@chatroom"}, proactive_groups={"g2@chatroom"})
+        # 有群白名单时, 非白名单群仍被步骤 2 拦住; 显式列表不会绕过白名单。
+        self.assertFalse(policy.is_allowed(p, "wxid_u", True, "g2@chatroom", "随便聊聊"))
+        self.assertTrue(policy.is_allowed(p, "wxid_u", True, "g1@chatroom", "随便聊聊"))
+
     def test_at_me_in_proactive_group_is_normal_wake(self):
         p = snap(proactive_groups={"g1@chatroom"})
         d = policy.classify(p, "wxid_u", True, "g1@chatroom", "@小助手 你好")

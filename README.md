@@ -81,15 +81,15 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 ### 🛡 完善的接入能力
 - **系统消息静默（内置，任何模式生效）**：公众号（`gh_`）、微信团队、微信支付、服务通知、财付通、微信安全中心、订阅号消息等系统会话，以及状态/系统/撤回消息、红包/转账卡片，都不会触发 AI
 - **私聊黑名单**：`wpp_block_users` / `/block`，全部放行模式下排除指定 wxid，群聊里也屏蔽该成员
-- **白名单**：仅白名单 wxid 触发 AI（防陌生人骚扰）
+- **白名单**：私聊仅白名单 wxid 触发 AI；群白名单里的 `@chatroom` 同时作为主动回复候选
 - **群消息准入策略**：`atbot`（只放行 @ 机器人）/ `none` / `all`（放行所有群消息，观察模式，不强制回复）
-- **主动回复候选群**：按群 opt-in，未 @ 消息也放行给 AstrBot，但是否回复由 Heartflow / 内置 `active_reply` 决定
+- **主动回复候选群**：**与群白名单共用**，群进白名单即放行未 @ 消息；是否回复由 Heartflow / 内置 `active_reply` 决定
 - **filehelper 白名单命令**：在文件传输助手里发指令管理白名单（仿 wpp-openclaw），三域统一 **add/del/list**
   - `/user add|del <wxid> [wxid...]` 私聊白名单（支持批量）/ `/user list` 查看
   - `/block add|del|list <wxid> [wxid...]` 私聊黑名单（全部放行模式下排除指定人；群聊里也屏蔽该成员）
-  - `/group add|del <群ID> [群ID...]` 群白名单（支持批量）/ `/group list` 查看
+  - `/group add|del <群ID> [群ID...]` 群白名单（支持批量，自动作为主动回复候选）/ `/group list` 查看
   - `/blacklist add|del|list <群ID> [群ID...]` 黑名单群（黑白名单**互斥**，加一边自动移另一边）
-  - `/proactive add|del|list <群ID> [群ID...]` 主动回复候选群（未 @ 也放行；`list` 会打印 UMO）
+  - `/proactive add|del|list <群ID> [群ID...]` 额外主动候选群（未配置群白名单时用；`list` 会区分白名单自动纳入与显式候选）
   - `/mode atbot|none|all` 群消息准入模式热切
   - `/at on|off` 群聊是否必须 @ 才回复（主动候选群优先）
   - `/help` 显示全部命令（**自动遍历命令注册表**，新命令自动进 help）— 运行时立即生效，**持久化**（重启不丢），无需改配置重启
@@ -206,10 +206,10 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 | `wpp_base_url` | ✅ | WPP API 地址（如 `http://<vendor-ip>:28062`）|
 | `wpp_auth_token` | 二选一 | **单账号模式**：WPP X-Access-Token（= authcode）|
 | `wpp_accounts` | 二选一 | **多账号模式**：账号列表 JSON（见下方多账号章节）|
-| `wpp_allow_users` | — | **单账号模式**白名单 wxid（逗号分隔），空则所有私聊触发 |
+| `wpp_allow_users` | — | **单账号模式**白名单 wxid / 群 ID（逗号分隔）；`@chatroom` 群ID 同时作为群白名单和主动回复候选 |
 | `wpp_block_users` | — | **单账号模式**私聊黑名单 wxid（逗号分隔），全部放行时排除指定人；群聊里也屏蔽该成员 |
 | `wpp_group_reply` | — | **单账号模式**群消息准入策略: `atbot` / `none` / `all`（`all`=放行所有群消息，观察模式，不强制回复）|
-| `wpp_proactive_groups` | — | **单账号模式**主动回复候选群（逗号分隔群 ID）；未 @ 消息也放行，是否回复由决策插件决定 |
+| `wpp_proactive_groups` | — | **单账号模式**额外主动候选群（逗号分隔群 ID）；群白名单已自动共用，通常无需填写 |
 | `wpp_sync_heartflow_whitelist` | — | 群白名单自动同步到 Heartflow `chat_whitelist`（默认 `true`，未装 Heartflow 自动跳过；每 5 分钟自愈）|
 | `wpp_lazy_media` | — | 未 @ 群消息媒体懒加载（默认 `true`）；启用内置 `group_icl_enable` / `group_message_history_enable` 时建议设为 `false` |
 | `wpp_send_interval_ms` | — | 同一会话两次发送的最小间隔，默认 `300` 毫秒；`0`=不节流 |
@@ -231,8 +231,8 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 `wpp_accounts` 配置示例：
 ```json
 [
-  {"id": "xieyin", "authcode": "<authcode_账号1>", "allow_users": "<wxid_白名单>", "group_reply": "atbot"},
-  {"id": "yirong", "authcode": "<authcode_账号2>", "allow_users": "", "block_users": "<wxid_排除>", "group_reply": "atbot", "proactive_groups": "<群id>@chatroom", "blacklist_groups": ""},
+  {"id": "xieyin", "authcode": "<authcode_账号1>", "allow_users": "<wxid_白名单>,<群id>@chatroom", "group_reply": "atbot"},
+  {"id": "yirong", "authcode": "<authcode_账号2>", "allow_users": "", "block_users": "<wxid_排除>", "group_reply": "atbot", "proactive_groups": "<无群白名单时的额外候选>@chatroom", "blacklist_groups": ""},
   {"id": "test",  "authcode": "xxx", "require_at_mention": true}
 ]
 ```
@@ -252,9 +252,10 @@ WPP 适配器只负责**准入**，不负责判断“要不要回复”。链路
 
 #### 配置
 
-1. 把群加入主动候选名单（三选一）：
-   - Dashboard：`wpp_proactive_groups` / `wpp_accounts[].proactive_groups`
-   - filehelper：`/proactive add 123@chatroom`
+1. 把群加入**群白名单**即可（主动回复与白名单共用同一份列表）：
+   - Dashboard：`wpp_allow_users` / `wpp_accounts[].allow_users` 加群 ID
+   - filehelper：`/group add 123@chatroom`
+   - 未配置群白名单、只想单独 opt-in 时，才用 `proactive_groups` / `/proactive add`
 2. 启用一个决策插件（**只开一个**）：
    - **Heartflow（推荐）**：`judge_provider_name` 指向便宜的判断模型，
      `whitelist_enabled=true` + `chat_whitelist=["wpp:GroupMessage:123@chatroom"]`；
@@ -267,11 +268,12 @@ WPP 适配器只负责**准入**，不负责判断“要不要回复”。链路
 
 #### 安全默认值
 
-- **只加 `proactive_groups` 不会让机器人回复任何消息**：适配器不设
-  `is_at_or_wake_command`，只有决策插件批准后核心才会调用 LLM。
-- `group_reply=none`、黑名单群、`block_users` 仍然优先；`proactive_groups`
+- **进群白名单或 `proactive_groups` 都不会让机器人自动回复任何消息**：适配器
+  只放行、不设 `is_at_or_wake_command`，只有决策插件批准后核心才会调用 LLM。
+- `group_reply=none`、黑名单群、`block_users` 仍然优先；白名单/主动候选
   不能绕过它们。
-- 一个群必须先通过群白名单（若配置了群白名单）才会进入主动候选判断。
+- 一个群必须先通过群白名单（若配置了群白名单）才会进入主动候选判断；
+  群白名单里的 `@chatroom` 自动成为主动候选，无需重复配置。
 
 #### UMO 格式
 
@@ -284,8 +286,9 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 例如 `wpp:GroupMessage:123@chatroom`。用 `/proactive list` 可直接看到每个群
 对应的 UMO；多账号或自定义平台实例 id 时前缀会不同。
 
-**自动同步（默认开启）**：WPP 会把各账号的群白名单 + 主动候选群自动同步到
-Heartflow 的 `chat_whitelist`：
+**自动同步（默认开启）**：WPP 会把各账号的群白名单 + 额外主动候选群自动同步到
+Heartflow 的 `chat_whitelist`；群白名单本身就是主动候选，**一份名单同时供
+适配器准入、主动回复和 Heartflow 使用**：
 
 - 只替换本平台的 `wpp:GroupMessage:` 条目，其他平台/手写条目保留；
 - `/group`、`/proactive` 增删、外部修改 `wpp_whitelist.json` 热更新、适配器启动时都会同步；

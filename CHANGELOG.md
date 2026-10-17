@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.7.1 (2026-10-17) — 主动回复与群白名单共用
+
+### 变更
+- **生产主动回复改为与群白名单共用同一份列表**：`allow_users` 中的
+  `@chatroom` 群 ID 自动作为主动候选群，未 @ 消息也会放行给 AstrBot；
+  不再需要把同一个群重复加入 `proactive_groups`。
+- `proactive_groups` 继续保留，作为未配置群白名单时的显式补充；群白名单
+  存在时仍不能绕过白名单/黑名单/`group_reply=none`。
+- filehelper 命令输出同步调整：
+  - `/group add|list` 明确提示白名单群已自动纳入主动候选；
+  - `/proactive list` 区分“白名单自动纳入”和“显式候选”；
+  - `/proactive del` 提示该群是否仍因白名单自动生效；
+  - `/proactive add` 提示未进群白名单时不会放行。
+- 策略页新增 `auto_proactive_groups` / `effective_proactive_groups`，
+  并提示白名单自动共用。
+- Heartflow 同步逻辑不变（原本已是群白名单 ∪ 主动候选群），现在适配器
+  准入与 Heartflow 白名单语义一致。
+
+### 测试
+- 新增群白名单自动主动候选、私聊白名单不影响群、显式候选仍受群白名单
+  约束等用例；真实主路径冒烟新增 1 项。测试总数 139，主路径 21/21。
+
 ## v0.7.0 (2026-10-17) — 长回复引用 / 入站资料 / 出站稳定性
 
 ### 修复

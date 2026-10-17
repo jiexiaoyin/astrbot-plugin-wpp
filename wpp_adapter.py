@@ -164,9 +164,9 @@ WPP_CONFIG_METADATA = {
         "hint": '多账号时用。JSON 数组, 每元素: {"id":"xieyin","authcode":"xxx","allow_users":"","block_users":"","group_reply":"atbot","blacklist_groups":"","require_at_mention":false,"proactive_groups":""}。留空=单账号(wpp_auth_token)',
     },
     "wpp_allow_users": {
-        "description": "单账号模式: 白名单 wxid (逗号分隔)",
+        "description": "单账号模式: 白名单 wxid / 群ID (逗号分隔)",
         "type": "string",
-        "hint": "仅单账号时用。多账号的白名单在 wpp_accounts 每账号里配",
+        "hint": "仅单账号时用。wxid 控制私聊, @chatroom 群ID 同时作为群白名单和主动回复候选（与白名单共用）。多账号的白名单在 wpp_accounts 每账号里配",
     },
     "wpp_block_users": {
         "description": "单账号模式: 私聊黑名单 wxid (逗号分隔)",
@@ -179,9 +179,9 @@ WPP_CONFIG_METADATA = {
         "hint": "仅单账号时用。atbot=只放行@ / none=忽略群 / all=放行所有群消息(观察模式, 不强制回复)",
     },
     "wpp_proactive_groups": {
-        "description": "单账号模式: 主动回复候选群 (逗号分隔群ID)",
+        "description": "单账号模式: 额外主动回复候选群 (逗号分隔群ID)",
         "type": "string",
-        "hint": "仅单账号时用。这些群的未@消息也会放行给 AstrBot, 但适配器不唤醒、不强制回复; 由 Heartflow/内置 active_reply 决定是否接话。留空=关闭。",
+        "hint": "仅单账号时用。群白名单 (wpp_allow_users 中的 @chatroom) 已自动作为主动候选, 通常无需填写; 此项只用于未配置群白名单时显式补充。未@消息只放行不唤醒, 由 Heartflow/active_reply 决定是否接话。",
     },
     "wpp_sync_heartflow_whitelist": {
         "description": "群白名单自动同步到 Heartflow",
@@ -429,8 +429,8 @@ class WppPlatformAdapter(Platform):
                 self._heartflow_all_warned = True
                 logger.warning(
                     "[WPP] group_reply=all 会放行所有群, 但 Heartflow 白名单只能覆盖"
-                    "显式列出的 allow_users 群 / proactive_groups; 如需让心流接管"
-                    "某个群, 请把群 ID 加入 proactive_groups。"
+                    "显式列出的 allow_users 群 / proactive_groups; 群白名单中的"
+                    "@chatroom 会自动作为主动候选并同步心流, 无需重复配置。"
                 )
             sync_heartflow_config(self.instance_id, groups, reason)
         except Exception as e:  # noqa: BLE001

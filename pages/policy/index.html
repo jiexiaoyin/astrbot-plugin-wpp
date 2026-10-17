@@ -91,7 +91,7 @@
               </div>
               <div class="row">
                 <div>
-                  <label>私聊白名单 allow_users</label>
+                  <label>白名单 allow_users（wxid / 群ID）</label>
                   <textarea data-field="allow_users">${esc(arrText(a.allow_users))}</textarea>
                 </div>
                 <div>
@@ -107,6 +107,8 @@
                 <div>
                   <label>主动回复候选群 proactive_groups</label>
                   <textarea data-field="proactive_groups">${esc(arrText(a.proactive_groups))}</textarea>
+                  <div class="hint">群白名单中的 @chatroom 会自动共用为主动候选，无需重复填写。</div>
+                  ${a.auto_proactive_groups?.length ? `<div class="hint">白名单自动纳入 ${a.auto_proactive_groups.length} 个群：${esc(arrText(a.auto_proactive_groups))}</div>` : ""}
                 </div>
               </div>
               <div class="row">

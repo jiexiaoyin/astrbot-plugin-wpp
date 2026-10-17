@@ -167,12 +167,19 @@ class WppPlugin(Star):
     # ------------------------------------------------------------------ 策略管理
     @staticmethod
     def _account_policy_view(acct) -> dict:
+        auto_proactive = sorted(
+            str(u) for u in acct.allow_users if str(u).endswith("@chatroom")
+        )
         return {
             "id": acct.account_id,
             "allow_users": sorted(acct.allow_users),
             "block_users": sorted(acct.block_users),
             "blacklist_groups": sorted(acct.blacklist_groups),
             "proactive_groups": sorted(acct.proactive_groups),
+            "auto_proactive_groups": auto_proactive,
+            "effective_proactive_groups": sorted(
+                set(acct.proactive_groups) | set(auto_proactive)
+            ),
             "group_reply": acct.group_reply,
             "require_at_mention": acct.require_at_mention,
             "lazy_media": bool(getattr(acct, "lazy_media", True)),
@@ -397,7 +404,8 @@ class WppPlugin(Star):
                 for acct in inst["accounts"]:
                     lines.append(
                         f"  {acct['id']}: group_reply={acct['group_reply']} "
-                        f"allow={acct['allow_users']} proactive={acct['proactive_groups']}"
+                        f"allow={acct['allow_users']} "
+                        f"proactive={acct['effective_proactive_groups']}"
                     )
                     lines.append(
                         f"    block={acct['block_users']} "
@@ -459,7 +467,8 @@ class WppPlugin(Star):
             inst.sync_heartflow_whitelist("command")
         yield event.plain_result(
             f"已更新 {account_id}: group_reply={acct.group_reply} "
-            f"allow={sorted(acct.allow_users)} proactive={sorted(acct.proactive_groups)} "
+            f"allow={sorted(acct.allow_users)} "
+            f"proactive={self._account_policy_view(acct)['effective_proactive_groups']} "
             f"require_at={acct.require_at_mention}"
         )
 

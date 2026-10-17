@@ -277,6 +277,22 @@ class TestMainPathSmoke(unittest.TestCase):
         evs = self.run_src(a, {"sender_id": "wxid_stranger", "msg_id": "m9", "content": "hi"})
         check("whitelist blocks stranger", len(evs) == 0)
 
+        # 生产主动回复与群白名单共用: 群白名单直接放行未 @ 消息
+        a = self.new_acc(allow_users={"123@chatroom"})
+        evs = self.run_src(
+            a,
+            {
+                "sender_id": "wxid_f",
+                "chatroom_id": "123@chatroom",
+                "msg_id": "w1",
+                "content": "群里随便聊聊",
+            },
+        )
+        check(
+            "whitelist group auto proactive",
+            len(evs) == 1 and evs[-1].get_extra("_wpp_lazy_media") is a,
+        )
+
         # ---- v0.6.0 主动候选群 + 媒体懒加载 ----
         a = self.new_acc(proactive_groups={"123@chatroom"})
         evs = self.run_src(

@@ -136,6 +136,7 @@ class FilehelperCommands:
             await reply(
                 f"📋 群白名单 ({len(groups)}):\n"
                 + ("\n".join(f"- {u}" for u in groups) if groups else "(空)")
+                + "\n说明: 白名单群自动作为主动回复候选 (未@也放行, 不强制回复)"
             )
             return
         if action == "add" and targets:
@@ -147,7 +148,8 @@ class FilehelperCommands:
             groups = sorted(u for u in acct.allow_users if u.endswith("@chatroom"))
             await reply(
                 f"✅ 已授权群白名单: {', '.join(added) or '(均已存在)'}\n"
-                f"当前群 ({len(groups)}): {', '.join(groups) or '(空)'}"
+                f"当前群 ({len(groups)}): {', '.join(groups) or '(空)'}\n"
+                "白名单群已自动纳入主动回复候选 (未@也放行, 由决策插件决定是否回复)"
             )
             return
         if action == "del" and targets:
@@ -211,29 +213,66 @@ class FilehelperCommands:
             pid = str(getattr(acct.platform, "instance_id", "") or "wpp")
             return f"{pid}:GroupMessage:{group_id}"
 
+        auto_groups = sorted(
+            str(u) for u in acct.allow_users if str(u).endswith("@chatroom")
+        )
         if action == "list" or (action == "" and not targets):
-            groups = sorted(acct.proactive_groups)
-            lines = [f"👀 主动回复候选群 ({len(groups)}):"]
-            if groups:
-                for g in groups:
+            explicit = sorted(acct.proactive_groups)
+            effective = sorted(set(explicit) | set(auto_groups))
+            lines = [f"👀 主动回复候选群 ({len(effective)}):"]
+            if auto_groups:
+                lines.append(f"白名单自动纳入 ({len(auto_groups)}):")
+                for g in auto_groups:
                     lines.append(f"- {g}")
                     lines.append(f"  UMO: {_umo(g)}")
-            else:
+            if explicit:
+                lines.append(f"显式候选 ({len(explicit)}):")
+                for g in explicit:
+                    lines.append(f"- {g}")
+                    lines.append(f"  UMO: {_umo(g)}")
+            if not effective:
                 lines.append("(空)")
-            lines.append("说明: 只放行未@消息, 不强制回复; 由 Heartflow/active_reply 决定")
+            lines.append(
+                "说明: 只放行未@消息, 不强制回复; 由 Heartflow/active_reply 决定。"
+                "群白名单自动共用, 无需重复 /proactive add"
+            )
             await reply("\n".join(lines))
             return
 
         if action == "add" and targets:
-            added = [t for t in targets if t not in acct.proactive_groups]
-            acct.proactive_groups.update(targets)
-            acct.save_policy()
-            await reply(
-                f"✅ 已加入主动回复候选群: {', '.join(added) or '(均已存在)'}\n"
-                f"当前 ({len(acct.proactive_groups)}): "
-                f"{', '.join(sorted(acct.proactive_groups))}\n"
-                "注意: 只放行未@消息, 不会强制回复; 请同时启用 Heartflow 等决策插件"
+            added = [
+                t
+                for t in targets
+                if t not in acct.proactive_groups and t not in auto_groups
+            ]
+            already = [
+                t
+                for t in targets
+                if t in acct.proactive_groups or t in auto_groups
+            ]
+            acct.proactive_groups.update(
+                t for t in targets if t not in auto_groups
             )
+            acct.save_policy()
+            msg = f"✅ 已加入主动回复候选群: {', '.join(added) or '(无新增)'}"
+            if already:
+                msg += f"\nℹ️ 已在候选中 (含白名单自动纳入): {', '.join(already)}"
+            blocked = (
+                [t for t in targets if t not in auto_groups]
+                if auto_groups
+                else []
+            )
+            if blocked:
+                msg += (
+                    f"\n⚠️ 群白名单已启用, 以下群未进白名单, 显式加入也不会放行: "
+                    f"{', '.join(blocked)}; 请先 /group add"
+                )
+            msg += (
+                f"\n当前显式列表 ({len(acct.proactive_groups)}): "
+                f"{', '.join(sorted(acct.proactive_groups)) or '(空)'}"
+                "\n注意: 只放行未@消息, 不会强制回复; 请同时启用 Heartflow 等决策插件"
+            )
+            await reply(msg)
             return
 
         if action == "del" and targets:
@@ -242,11 +281,17 @@ class FilehelperCommands:
             for t in removed:
                 acct.proactive_groups.discard(t)
             acct.save_policy()
-            msg = f"✅ 已移出主动回复候选群: {', '.join(removed) or '(无)'}"
+            msg = f"✅ 已移出显式主动候选: {', '.join(removed) or '(无)'}"
             if missing:
-                msg += f"\n⚠️ 不在名单: {', '.join(missing)}"
+                msg += f"\n⚠️ 不在显式名单: {', '.join(missing)}"
+            still_auto = [t for t in targets if t in auto_groups]
+            if still_auto:
+                msg += (
+                    f"\nℹ️ 仍在群白名单中, 因此仍会自动作为主动候选: "
+                    f"{', '.join(still_auto)}; 如需完全关闭请 /group del"
+                )
             msg += (
-                f"\n当前 ({len(acct.proactive_groups)}): "
+                f"\n当前显式列表 ({len(acct.proactive_groups)}): "
                 f"{', '.join(sorted(acct.proactive_groups)) or '(空)'}"
             )
             await reply(msg)

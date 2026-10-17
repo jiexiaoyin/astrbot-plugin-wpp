@@ -53,6 +53,10 @@ class TestPolicyApi(unittest.TestCase):
         plugin = self._plugin(fake_account())
         view = plugin._account_policy_view(fake_account())
         self.assertEqual(view["allow_users"], ["123@chatroom", "u1"])
+        self.assertEqual(view["auto_proactive_groups"], ["123@chatroom"])
+        self.assertEqual(
+            view["effective_proactive_groups"], ["123@chatroom"]
+        )
         self.assertEqual(view["stats"]["send"]["sent"], 1)
         instances = plugin._policy_instances()
         self.assertEqual(instances[0]["id"], "wpp")
