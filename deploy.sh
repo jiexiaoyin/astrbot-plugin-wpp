@@ -10,8 +10,8 @@ echo "==> [1/4] 拷贝插件到容器 $CONTAINER"
 docker exec "$CONTAINER" sh -c "mkdir -p $PLUGIN_DIR"
 docker cp "$PLUGIN_SRC"/. "$CONTAINER":"$PLUGIN_DIR"/
 
-echo "==> [2/4] 检查依赖 aiohttp"
-docker exec "$CONTAINER" sh -c 'python3 -c "import aiohttp" >/dev/null 2>&1 || pip install aiohttp -i https://mirrors.aliyun.com/pypi/simple/'
+echo "==> [2/4] 检查依赖 aiohttp + websockets"
+docker exec "$CONTAINER" sh -c 'python3 -c "import aiohttp, websockets" >/dev/null 2>&1 || pip install aiohttp websockets -i https://mirrors.aliyun.com/pypi/simple/'
 
 echo "==> [3/4] 重启 AstrBot"
 docker restart "$CONTAINER"

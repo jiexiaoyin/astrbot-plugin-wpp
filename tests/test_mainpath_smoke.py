@@ -58,6 +58,11 @@ class FakeClient:
         self.voice_calls = 0
         self.group_profile_calls = 0
         self.nickname_calls = 0
+        self.texts = []
+
+    async def send_text(self, to, text, *a, **k):
+        self.texts.append((to, text))
+        return {"Code": 0}
 
     async def download_image_cdn(self, *a, **k):
         self.image_calls += 1
@@ -445,6 +450,40 @@ class TestMainPathSmoke(unittest.TestCase):
             len(evs) == 1
             and a._api.nickname_calls == 1
             and evs[-1].msg.sender.nickname == "私聊好友",
+        )
+
+        a = self.new_acc()
+        evs = self.run_src(
+            a,
+            {
+                "sender_id": "filehelper",
+                "recipient_id": "filehelper",
+                "msg_id": "help1",
+                "content": "/help",
+            },
+        )
+        check(
+            "filehelper help",
+            len(evs) == 0
+            and bool(a._api.texts)
+            and "WPP 命令" in a._api.texts[-1][1]
+            and "群白名单必须包含心流白名单" in a._api.texts[-1][1],
+        )
+
+        evs = self.run_src(
+            a,
+            {
+                "sender_id": "filehelper",
+                "recipient_id": "filehelper",
+                "msg_id": "help2",
+                "content": "/help group",
+            },
+        )
+        check(
+            "filehelper help detail",
+            len(evs) == 0
+            and a._api.texts[-1][1].startswith("【/group")
+            and "/group add|del" in a._api.texts[-1][1],
         )
 
         failed = [name for name, ok in cases if not ok]

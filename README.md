@@ -16,6 +16,48 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 > 🚀 **核心亮点**：**WS 实时主通道**（不断连、自动重连）+ **单实例多账号**（一个适配器管多个微信，通过 authcode 隔离）+ **全类型媒体**（图片/语音/文件/视频全部 AI 可读）+ **主动回复候选群**（未 @ 也放行，由 Heartflow 等插件决定是否接话）+ **filehelper 命令**（文件助手发指令管理白名单）。
 
+## 📖 目录
+
+- [快速开始](#-快速开始)
+- [相关项目](#-相关项目)
+- [插件亮点](#-插件亮点)
+- [命令参考](#-命令参考)
+- [架构](#-架构)
+- [文件结构](#-文件结构)
+- [部署](#-部署)
+- [平台配置字段](#平台配置字段)
+- [多账号](#-多账号单实例内-通过-authcode-隔离)
+- [主动回复（群聊未 @）](#-主动回复群聊未-)
+- [常见问题](#-常见问题)
+- [开发与测试](#-开发与测试)
+- [版本与兼容性](#版本与兼容性)
+- [凭证安全](#-凭证安全)
+- [文档](#-文档)
+
+## ⚡ 快速开始
+
+**环境要求**：AstrBot `>=4.16.0,<5`（Docker 部署）、Python 3.10+、可用的
+WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
+
+1. **安装插件**：把本仓库放入 AstrBot 插件目录后重启：
+   ```bash
+   docker cp astrbot-plugin-wpp astrbot:/AstrBot/data/plugins/
+   docker restart astrbot
+   ```
+2. **添加平台**：Dashboard → 平台适配器 → 添加「微信 WPP」，至少填写：
+   - `wpp_base_url`：vendor HTTP 地址，如 `http://<vendor-ip>:28062`
+   - `wpp_auth_token`：vendor authcode（单账号）
+   - `wpp_ws_url`：vendor WS 地址，如 `wss://<vendor-domain>/ws/sync`
+   - 保存并启用。
+3. **验证在线**：AstrBot 日志出现 `账号已在线` + `WS connected`；私聊机器人
+   或在群里 `@机器人` 发一条消息即可收到回复。
+4. **按需收紧策略**：在文件传输助手发 `/help` 查看当前策略与全部命令；
+   把群 ID 加入群白名单后，该群自动成为主动回复候选（见
+   [主动回复](#-主动回复群聊未-)）。
+
+最小可用配置只有 `base_url + authcode + ws_url`。白名单为空时私聊全部放行、
+群聊按 `wpp_group_reply`（默认 `atbot`）处理，建议上线前先配置白名单。
+
 ---
 
 ## 🔗 相关项目
@@ -84,16 +126,11 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 - **白名单**：私聊仅白名单 wxid 触发 AI；群白名单里的 `@chatroom` 同时作为主动回复候选
 - **群消息准入策略**：`atbot`（只放行 @ 机器人）/ `none` / `all`（放行所有群消息，观察模式，不强制回复）
 - **主动回复候选群**：**与群白名单共用**，群进白名单即放行未 @ 消息；是否回复由 Heartflow / 内置 `active_reply` 决定
-- **filehelper 白名单命令**：在文件传输助手里发指令管理白名单（仿 wpp-openclaw），三域统一 **add/del/list**
-  - `/user add|del <wxid> [wxid...]` 私聊白名单（支持批量）/ `/user list` 查看
-  - `/block add|del|list <wxid> [wxid...]` 私聊黑名单（全部放行模式下排除指定人；群聊里也屏蔽该成员）
-  - `/group add|del <群ID> [群ID...]` 群白名单（支持批量，自动作为主动回复候选）/ `/group list` 查看
-  - `/blacklist add|del|list <群ID> [群ID...]` 黑名单群（黑白名单**互斥**，加一边自动移另一边）
-  - `/proactive add|del|list <群ID> [群ID...]` 额外主动候选群（未配置群白名单时用；`list` 会区分白名单自动纳入与显式候选）
-  - `/mode atbot|none|all` 群消息准入模式热切
-  - `/at on|off` 群聊是否必须 @ 才回复（主动候选群优先）
-  - `/help` 显示全部命令（**自动遍历命令注册表**，新命令自动进 help）— 运行时立即生效，**持久化**（重启不丢），无需改配置重启
-  - **配置文件热更新**：手动编辑 `wpp_whitelist.json` 也自动生效（约 3 秒检测），无需重启
+- **filehelper 命令**：在文件传输助手里发 `/help` 查看当前策略、分组命令和单条
+  命令详情；`/user` `/block` `/group` `/blacklist` `/proactive` 均支持
+  `add/del/list`（批量），运行时立即生效并持久化；手动编辑
+  `wpp_whitelist.json` 也会在约 3 秒内热加载。完整列表见
+  [命令参考](#-命令参考)。
 - **多消息遍历**：vendor 一次推多条不遗漏
 - **自动心跳**：账号离线自动拉上线
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
@@ -115,15 +152,48 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 - **入站资料预取**：群名/群主/成员昵称缓存 30 分钟，AI 提示词拿真实昵称，
   引用回复 @ 也复用同一份缓存。
 
-### 👮 管理员命令
-需要 AstrBot 管理员权限（`PermissionType.ADMIN`）：
+## 🎛 命令参考
 
-- `/wpp_policy` — 查看全部账号策略
-- `/wpp_policy <账号> <字段> add|del|set <值...>` — 修改列表字段
-  （`allow_users` / `block_users` / `blacklist_groups` / `proactive_groups`）
-- `/wpp_policy <账号> group_reply set atbot|none|all`
-- `/wpp_policy <账号> require_at_mention set true|false`
-- `/wpp_sync [实例id]` — 立即同步 Heartflow 白名单
+### filehelper 命令
+
+在微信「文件传输助手」里发送，只影响**当前账号**。`/help` 会显示版本、
+当前策略摘要和分组命令；`/help <命令>` 查看单条详情。
+
+| 命令 | 作用 | 说明 |
+|---|---|---|
+| `/help [命令]` | 帮助 | 无参数显示策略摘要 + 全部命令；如 `/help group` |
+| `/user add\|del <wxid>...` | 私聊白名单 | 支持批量；`/user list` 查看 |
+| `/block add\|del <wxid>...` | 私聊黑名单 | 全部放行时排除指定人；群聊里也屏蔽该成员；`list` 查看 |
+| `/group add\|del <群ID>...` | 群白名单 | 支持批量；**群白名单自动成为主动候选**；`list` 查看 |
+| `/blacklist add\|del <群ID>...` | 群黑名单 | 与群白名单**互斥**，加一边自动移另一边；`list` 查看 |
+| `/proactive add\|del <群ID>...` | 显式主动候选 | 群白名单已自动纳入；仅未配置群白名单时作补充；`list` 查看 |
+| `/mode atbot\|none\|all` | 群消息准入 | `atbot`=只放行 @；`none`=忽略群；`all`=放行全部群消息（观察，不强制回复） |
+| `/at on\|off` | 必须 @ | 群聊是否必须 @ 机器人才放行；主动候选群优先 |
+
+**约定**：
+
+- 群 ID 以 `@chatroom` 结尾；私聊 ID 是 `wxid_...`。
+- 所有修改立即持久化到 `data/plugin_data/astrbot-plugin-wpp/accounts/<账号>/wpp_whitelist.json`。
+- 黑白名单互斥；`block_users` 优先级最高，主动候选不能绕过。
+- `/group del` 会把群从群白名单和自动主动候选中一起移除；如仍需主动观察，
+  改用 `/proactive add`（仅在未配置群白名单时有效）。
+
+### AstrBot 管理员命令
+
+以下命令需要 AstrBot 管理员权限（`PermissionType.ADMIN`），可在任意会话使用：
+
+| 命令 | 作用 |
+|---|---|
+| `/wpp_status [实例id\|账号id]` | 查询账号在线状态、wxid、长连接状态 |
+| `/wpp_policy` | 查看全部实例/账号的策略摘要（含生效主动候选） |
+| `/wpp_policy <账号> <字段> add\|del\|set <值...>` | 修改列表字段：`allow_users` / `block_users` / `blacklist_groups` / `proactive_groups` |
+| `/wpp_policy <账号> group_reply set atbot\|none\|all` | 修改群消息准入模式 |
+| `/wpp_policy <账号> require_at_mention set true\|false` | 修改是否必须 @ |
+| `/wpp_sync [实例id]` | 立即把 WPP 群白名单同步到 Heartflow |
+
+> 管理员命令修改后同样会触发 Heartflow 白名单同步。Heartflow 白名单来源
+> （`auto` / `custom`）在 Dashboard 平台配置中设置，见
+> [主动回复](#-主动回复群聊未-)。
 
 ---
 
@@ -153,20 +223,22 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 | 文件 | 作用 |
 |---|---|
-| `main.py` | 插件入口 (Star) + Web API (账号信息查询) |
+| `main.py` | 插件入口 (Star) + Web API (账号信息/策略/Heartflow) + 媒体懒加载钩子 |
 | `wpp_adapter.py` | 平台适配器 (账号管理器 + 账号解析 + 生命周期 + 发送路由) |
 | `wpp_account.py` | WppAccount 类 (单账号: WS + 有界队列/worker + 白名单 + 去重) |
 | `wpp_messages.py` | vendor 消息解析/转换 (纯函数, 含非消息事件过滤) |
 | `wpp_appmsg.py` | appmsg/XML 卡片结构化解析 (链接/小程序/位置/名片/合并转发/接龙) |
-| `wpp_policy.py` | 白名单/群准入策略 (纯函数, 含 proactive_groups) |
+| `wpp_policy.py` | 白名单/群准入策略 (纯函数, 群白名单自动主动候选) |
+| `wpp_heartflow.py` | 群白名单 → Heartflow `chat_whitelist` 同步 (auto/custom + 子集不变量) |
 | `wpp_media.py` | 图片/文件/语音/视频下载 + 消息链富化 (支持懒加载选择性下载) |
 | `wpp_send.py` | 出站消息链发送 + 长文本分片 |
-| `wpp_commands.py` | filehelper 管理命令 |
+| `wpp_commands.py` | filehelper 管理命令 + 动态 `/help` |
 | `wpp_storage.py` | 运行时数据持久化 (白名单/去重, 原子写) |
 | `wpp_client.py` | WPP vendor HTTP/WS API 封装 (retry + 超时) |
 | `wpp_event.py` | 消息事件 (重写 send 真正发送到微信) |
 | `tests/` | 单元测试 (pytest, 在 AstrBot 容器内运行) |
 | `pages/account-info/` | Dashboard 账号信息页面 |
+| `pages/policy/` | Dashboard 策略管理页面 (白名单/主动候选/Heartflow 同步) |
 | `logo.png` | 插件 + 平台适配器图标 |
 
 运行时数据（白名单、去重状态）写在 AstrBot 标准插件数据目录：
@@ -189,17 +261,23 @@ docker restart astrbot
 
 # 4. Dashboard (http://<host>:6185) → 平台适配器 → 添加 "微信 WPP"
 #    填配置 (见下表) → 保存启用
+
+# 5. 确认版本与启动状态
+docker logs --since 60s astrbot 2>&1 | grep -E "astrbot-plugin-wpp|账号已在线|WS.*connected"
 ```
+
+也可以直接执行仓库自带的 `./deploy.sh`（拷贝 → 依赖检查 → 重启 → 日志检查）。
 
 ### 测试（容器内运行，插件依赖 AstrBot 运行时）
 
 ```bash
-docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/tests -v
+docker exec -w /AstrBot/data/plugins astrbot \
+  python -m pytest -q astrbot-plugin-wpp/tests
 ```
 
 ---
 
-## ⚙️ 平台配置字段
+## 平台配置字段
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
@@ -240,7 +318,8 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 ```
 每个账号字段：`id`（唯一）、`authcode`（必填）、`allow_users`/`block_users`/`group_reply`/`proactive_groups`/`blacklist_groups`/`require_at_mention`（可选，默认同单账号）。
 
-filehelper 命令输出带账号标识（如 `【WPP 命令 (账号 xieyin)】`），各账号命令互不影响。
+filehelper 命令输出带账号标识与版本（如 `【WPP 命令 · 账号 xieyin · v<版本>】`），
+各账号命令互不影响。
 
 ### 🤖 主动回复（群聊未 @）
 
@@ -277,6 +356,25 @@ WPP 适配器只负责**准入**，不负责判断“要不要回复”。链路
 - 一个群必须先通过群白名单（若配置了群白名单）才会进入主动候选判断；
   群白名单里的 `@chatroom` 自动成为主动候选，无需重复配置。
 
+#### 群消息准入顺序
+
+```
+系统/支付/撤回等卡片       → 静默（任何模式）
+block_users               → 拒绝（群成员黑名单）
+blacklist_groups          → 拒绝
+群白名单（存在 @chatroom 时）→ 不在名单则拒绝
+group_reply=none          → 拒绝
+已 @ 机器人               → 放行（at_me）
+主动候选（白名单群自动纳入）→ 放行（proactive，不唤醒）
+require_at_mention=on     → 拒绝
+group_reply=all           → 放行（观察模式）
+其他                       → 拒绝
+```
+
+注意：`allow_users` 里只有在**至少有一个 `@chatroom`** 时才构成群白名单；
+如果只有私聊 wxid，群聊不会因为群白名单被拦截，而是继续按
+`group_reply` / `require_at_mention` 判断。
+
 #### UMO 格式
 
 Heartflow 白名单使用 `unified_msg_origin`，格式为：
@@ -288,10 +386,12 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 例如 `wpp:GroupMessage:123@chatroom`。用 `/proactive list` 可直接看到每个群
 对应的 UMO；多账号或自定义平台实例 id 时前缀会不同。
 
-**自动同步（默认开启）**：WPP 会把各账号的群白名单 + 额外主动候选群自动同步到
-Heartflow 的 `chat_whitelist`；群白名单本身就是主动候选，**一份名单同时供
-适配器准入、主动回复和 Heartflow 使用**：
+**自动同步（默认开启）**：WPP 会把各账号的群白名单（`auto` 模式下还包括
+显式 `proactive_groups`）同步到 Heartflow 的 `chat_whitelist`。同步结果始终
+满足**群白名单必须包含心流白名单**：
 
+- 群白名单非空时，同步目标会与群白名单取交集；白名单外的显式候选不会同步；
+- 群白名单为空（不限制群）时，`auto` 模式才使用显式 `proactive_groups`；
 - 只替换本平台的 `wpp:GroupMessage:` 条目，其他平台/手写条目保留；
 - `/group`、`/proactive` 增删、外部修改 `wpp_whitelist.json` 热更新、适配器启动时都会同步；
 - 另外每 5 分钟幂等自愈一次，Heartflow 重载/配置被外部改写后能自动恢复；
@@ -302,7 +402,7 @@ Heartflow 的 `chat_whitelist`；群白名单本身就是主动候选，**一份
 
 | 模式 | 行为 |
 |---|---|
-| `auto`（默认） | 参考 WPP 群白名单：Heartflow 白名单 = 群白名单 + 显式 `proactive_groups` |
+| `auto`（默认） | 参考 WPP 群白名单：Heartflow 白名单 = 群白名单 + 显式 `proactive_groups`，再与群白名单取交集 |
 | `custom` | 单独设置：Heartflow 白名单 = `wpp_heartflow_groups` 中列出的群 |
 
 > ⚠️ **不变量：群白名单必须包括心流白名单**。`custom` 中的群如果不在
@@ -328,10 +428,13 @@ Heartflow 的 `chat_whitelist`；群白名单本身就是主动候选，**一份
 
 #### 灰度建议
 
-1. 先在一个低风险群测试，Heartflow 白名单只放这个群；
+1. 先把一个低风险群加入群白名单；若白名单里还有其他群，用
+   `wpp_heartflow_whitelist_mode=custom` + `wpp_heartflow_groups` 只让心流观察
+   这一个群（群白名单仍需包含它）；
 2. 观察 1–3 天日志（`🔥 心流触发`、触发频率、误触发）；
 3. 调整阈值/冷却后再扩群；
-4. 回滚：`/proactive del <群ID>` 或关闭 Heartflow。
+4. 回滚：`/group del <群ID>`（同时退出主动候选和 Heartflow 同步），或关闭
+   Heartflow；`custom` 模式也可从 `wpp_heartflow_groups` 移除该群或切回 `auto`。
 
 ### 换新环境的自动适配
 配置 `wpp_base_url` + `wpp_auth_token` 后，插件**自动**：
@@ -341,6 +444,95 @@ Heartflow 的 `chat_whitelist`；群白名单本身就是主动候选，**一份
 4. 面板/UI 显示新地址
 
 > ⚠️ 前提：新 authcode 需在新 vendor 的 Redis 中为有效状态（`origin=local` + `enabled`），且新 vendor 能真实收发微信。详见 [DEPLOY.md](DEPLOY.md) 的接入清单。
+
+---
+
+## ❓ 常见问题
+
+### 群里 @ 了机器人但不回复
+按准入顺序排查：发送者是否在 `block_users`、群是否在 `blacklist_groups`、
+群白名单是否不包含该群、`group_reply` 是否为 `none`、`require_at_mention`
+是否开启但消息实际没有 @ 到机器人。日志里的拒绝原因会显示
+`block_user` / `blacklist_group` / `group_whitelist` / `group_none` /
+`require_at` / `no_at`。
+
+### 群白名单已配置，为什么未 @ 消息没有主动接话
+适配器只负责**准入**，不负责唤醒。确认：
+1. 该群确实在群白名单（`/group list`，白名单群自动成为主动候选）；
+2. 已启用且只启用一个决策插件（Heartflow 或内置 `active_reply`）；
+3. Heartflow 的 `enable_heartflow`、`whitelist_enabled`、`chat_whitelist`
+   包含该群的 UMO（`/proactive list` 可查看）；
+4. 判断阈值/冷却未拦截（如 `reply_threshold=0.7`、
+   `min_reply_interval_seconds=180`），且群里确实有可判断的上下文。
+
+### 心流白名单里少了某个群
+群白名单必须包含心流白名单。`custom` 模式下，不在 `allow_users`
+群白名单中的群会被拒绝同步并写 WARNING；先用 `/group add <群ID>` 把群加入
+群白名单。`auto` 模式下，显式 `proactive_groups` 也会与群白名单取交集。
+
+### 为什么公众号/微信团队/支付消息不会触发回复
+这些系统会话和支付/系统卡片在适配器层静默，任何模式都不会进入 AI。
+若旧版本出现误触发，升级到 v0.6.0+ 即可；仍异常时检查日志中的消息类型。
+
+### 引用回复没有 @ 被回复的人
+在 AstrBot 平台设置中开启 `reply_with_mention` 和 `reply_with_quote`。
+群聊引用气泡没有原生 At 字段，适配器会把 `@昵称` 合并到正文；昵称会依次
+从入站、引用、群成员、通讯录解析，失败才退回 `@wxid`。引用发送失败会自动
+回退为普通文本。
+
+### 多账号会互相影响吗
+不会。每个账号独立 WS、白名单、黑名单、群策略、去重和 filehelper 命令；
+filehelper 输出会带账号标识（如 `【WPP 命令 · 账号 xieyin】`）。管理员命令
+可用账号 id 指定目标。
+
+### 升级后如何确认生效
+查看启动日志中的 `Plugin astrbot-plugin-wpp (x.y.z)`，或在文件传输助手发
+`/help` 查看版本与策略摘要。
+
+---
+
+## 🧪 开发与测试
+
+```bash
+# 单元测试（插件依赖 AstrBot 运行时，建议在容器内执行）
+docker exec -w /AstrBot/data/plugins astrbot \
+  python -m pytest -q astrbot-plugin-wpp/tests
+
+# 真实主路径冒烟（适配器解析 → 准入 → 事件 → 发送）
+docker exec -w /AstrBot/data/plugins astrbot \
+  python -m pytest -q astrbot-plugin-wpp/tests/test_mainpath_smoke.py
+
+# 静态检查
+ruff check .
+python -m compileall -q .
+```
+
+**发布检查清单**：
+
+1. 更新 `metadata.yaml` 版本与 `CHANGELOG.md`；
+2. 跑完整测试 + 主路径冒烟 + `ruff` / `compileall`；
+3. 扫描敏感信息（真实 authcode、wxid、群 ID、vendor 域名/宿主 IP）；
+4. 同步到部署目录并重启，确认插件版本、账号在线、WS connected；
+5. 提交并推送 `master`。
+
+> 测试只使用临时目录/桩数据，不要连接生产 vendor；发布前确认
+> `accounts/`、`data/`、`__pycache__`、`.pytest_cache` 未被提交。
+
+---
+
+## 版本与兼容性
+
+| 项目 | 要求 / 说明 |
+|---|---|
+| AstrBot | `>=4.16.0,<5`（见 `metadata.yaml`）|
+| Python | 3.10+ |
+| 依赖 | `aiohttp` + `websockets`（WS 主通道必需）|
+| WPP vendor | 提供 HTTP API 与 `/ws/sync` WebSocket；认证使用 authcode |
+| Heartflow | 可选；未安装时白名单同步自动跳过 |
+| 平台 ID | 默认实例 id 为 `wpp`，Heartflow UMO 前缀随实例 id 变化 |
+
+升级插件只需替换插件目录并重启 AstrBot；白名单和去重数据保存在
+`data/plugin_data/astrbot-plugin-wpp/`，不会因替换插件文件丢失。
 
 ---
 

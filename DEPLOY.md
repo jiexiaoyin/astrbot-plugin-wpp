@@ -49,8 +49,12 @@ docker restart astrbot
 | `wpp_base_url` | `http://<vendor-ip>:28062` | WPP API 地址（跨容器用宿主机 IP）|
 | `wpp_auth_token` | 你的 authcode | X-Access-Token = authcode |
 | `wpp_ws_url` | `wss://<vendor-domain>/ws/sync` | **WS 主通道地址**（连接即收消息）。容器内可用宿主机 IP 或公网域名 |
-| `wpp_allow_users` | `wxid_abc,wxid_xxx` | 白名单（空=所有私聊都触发 AI）|
-| `wpp_group_reply` | `atbot` | 群消息策略 |
+| `wpp_allow_users` | `wxid_abc,123@chatroom` | 私聊 wxid / 群 ID（`@chatroom`）；空=私聊全部放行、群按 `group_reply` |
+| `wpp_group_reply` | `atbot` | 群消息准入：`atbot` / `none` / `all`（`all` 只观察，不强制回复）|
+| `wpp_proactive_groups` | 留空 | 显式主动候选群；群白名单已自动共用，通常无需填写 |
+| `wpp_sync_heartflow_whitelist` | `true` | 群白名单同步到 Heartflow（未安装自动跳过）|
+| `wpp_heartflow_whitelist_mode` | `auto` | `auto`=参考群白名单；`custom`=用 `wpp_heartflow_groups` 单独设置 |
+| `wpp_heartflow_groups` | 留空 | `custom` 模式的心流群名单；必须是群白名单的子集 |
 | `wpp_webhook_enabled` | `false` | webhook 已退役，保持 false（仅 WS）|
 
 ### 多账号模式
@@ -63,6 +67,30 @@ docker restart astrbot
 ```
 详见 [README.md 多账号章节](README.md)。
 
+### Heartflow 白名单
+
+WPP 群白名单会自动同步到 Heartflow 的 `chat_whitelist`，有两种来源：
+
+| `wpp_heartflow_whitelist_mode` | 同步目标 |
+|---|---|
+| `auto`（默认） | 群白名单（`allow_users` 的 `@chatroom`）+ 显式 `proactive_groups`，再与群白名单取交集 |
+| `custom` | `wpp_heartflow_groups` 单独列出的群 |
+
+**不变量：群白名单必须包含 Heartflow 白名单。** `custom` 中不在群白名单里的
+群会被拒绝同步，启动日志/修改日志会出现：
+
+```text
+[WPP] Heartflow 白名单要求群白名单必须包含它们; 以下群不在 allow_users 群白名单, 已跳过同步: ...
+```
+
+处理方式：先 `/group add <群ID>` 把群加入群白名单，或从
+`wpp_heartflow_groups` 移除该群。群白名单为空表示不限制群，此时
+`custom` 群可以正常同步。
+
+同步触发点：适配器启动、`/group` `/proactive` 修改、策略页保存、
+`wpp_whitelist.json` 热更新、每 5 分钟自愈；可用 `/wpp_sync` 手动触发。
+写盘后会同时更新已加载的 Heartflow 实例，无需重启。
+
 **注意**：
 - WPP 容器 host 网络，AstrBot 容器内访问 vendor 必须用**宿主机 IP** 或**公网域名**（容器名 DNS 不通）
 - authcode 绑定哪个微信，就在 vendor 面板（API 端口）用哪个微信登录（iPad/Mac 扫码）
@@ -73,18 +101,26 @@ docker restart astrbot
 
 ```bash
 # 1. 编辑源码 (在 /root/dev/astrbot-plugin-wpp/)
-# 2. 语法检查 + 测试
-python3 -m py_compile main.py wpp_adapter.py wpp_account.py wpp_client.py wpp_event.py
-docker exec astrbot sh -c 'cd /AstrBot/data/plugins/astrbot-plugin-wpp && python3 -m pytest tests/ -v'
-# 3. 部署到容器 (含新文件 wpp_account.py)
-docker cp main.py wpp_adapter.py wpp_account.py astrbot:/AstrBot/data/plugins/astrbot-plugin-wpp/
-docker cp wpp_client.py wpp_event.py astrbot:/AstrBot/data/plugins/astrbot-plugin-wpp/
-docker cp tests astrbot:/AstrBot/data/plugins/astrbot-plugin-wpp/tests
-# 4. 重启
+# 2. 静态检查 + 全量测试
+ruff check .
+docker exec -w /AstrBot/data/plugins astrbot \
+  python -m pytest -q astrbot-plugin-wpp/tests
+# 3. 真实主路径冒烟 (必做, 纯单测全绿不代表主路径能跑)
+docker exec -w /AstrBot/data/plugins astrbot \
+  python -m pytest -q astrbot-plugin-wpp/tests/test_mainpath_smoke.py
+# 4. 部署到容器 (保留运行时 accounts/data)
+rsync -a --delete \
+  --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
+  --exclude='.ruff_cache' --exclude='accounts' --exclude='data' \
+  ./ /opt/1panel/apps/astrbot/astrbot/data/plugins/astrbot-plugin-wpp/
+# 5. 重启并确认版本/在线/WS
 docker restart astrbot
-# 5. 看日志
-docker logs -f astrbot
+docker logs --since 60s astrbot 2>&1 \
+  | grep -E "astrbot-plugin-wpp|账号已在线|WS.*connected|Traceback"
 ```
+
+> 若部署目录不是 host bind mount，可用 `docker cp`；原理相同。升级前建议备份
+> 部署目录到 `/data/`，回滚时替换回旧目录并重启。
 
 ## 同步 GitHub（每次更新必做）
 
@@ -107,6 +143,21 @@ git push origin master
 2. 看 AstrBot 日志：`docker logs astrbot` → 应见 `[WPP:账号id WS] connected`（WS 已连）+ `event_bus [wpp(wpp)]`（收到）
 3. 白名单：发送者 wxid 在 `wpp_allow_users`（或账号白名单）里吗？（日志 `消息被白名单/群策略过滤`）
 4. vendor push 格式：`{Data:{data:{messages:[...]}}}`（WS v1 格式）—— 如果格式变了，`_extract_all_msg_src` 要适配
+
+### 群白名单已加，但未 @ 消息没有主动回复
+1. 文件传输助手发 `/help`：确认群白名单数量、生效主动候选数量；
+2. 确认只启用一个决策插件（Heartflow / 内置 `active_reply`），且其白名单
+   包含 `wpp:GroupMessage:<群ID>`（`/proactive list` 可查看 UMO）；
+3. Heartflow `custom` 模式下，群必须同时在 WPP 群白名单中，否则启动日志会
+   出现「已跳过同步」WARNING；先用 `/group add <群ID>`；
+4. 检查 Heartflow 的判断阈值/冷却（如 `reply_threshold=0.7`、
+   `min_reply_interval_seconds=180`）；
+5. 适配器只准入、不唤醒，未 @ 消息进入事件总线后仍需决策插件批准。
+
+### /help 看不到新命令 / 版本不对
+`/help` 从 `metadata.yaml` 读取版本并遍历命令注册表。若版本仍旧：
+确认部署目录的 `metadata.yaml` 已更新、AstrBot 已重启，并检查启动日志
+`Plugin astrbot-plugin-wpp (x.y.z)`。
 
 ### WS 连不上 / 断连
 1. 确认 `wpp_ws_url` 可达：AstrBot 容器内 `curl http://<vendor>:<ws端口>/ws/sync` 应返回 401（服务在）

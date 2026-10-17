@@ -1,11 +1,33 @@
 # Changelog
 
+## v0.7.3 (2026-10-17) — /help 与文档完善
+
+### 变更
+- **filehelper `/help` 适配新版能力**：
+  - 从 `metadata.yaml` 读取版本，不再硬编码；
+  - 展示当前账号策略摘要（私聊/群白名单、显式与生效主动候选、黑名单群、
+    群模式、是否必须 @）；
+  - 命令按「私聊 / 群聊准入 / 帮助」分组；
+  - 新增 `/help <命令>` 单条详情（如 `/help group`）；
+  - 明确说明群白名单自动成为主动候选、适配器只准入不唤醒、Heartflow
+    `auto`/`custom` 模式及「群白名单必须包含心流白名单」不变量。
+- 更新命令描述，区分「白名单自动主动」与「显式补充主动」。
+- **README 完善**：新增快速开始、目录、完整命令参考、群消息准入顺序、
+  常见问题、开发与测试、版本与兼容性；修正 Heartflow 同步/回滚说明。
+- **DEPLOY 完善**：新增 Heartflow 白名单章节、全量测试/主路径冒烟/部署
+  流程、Heartflow 子集告警与 `/help` 排查；`deploy.sh` 同时检查
+  `aiohttp` + `websockets`。
+
+### 测试
+- 新增 `/help` 版本、策略摘要、分组命令、单命令详情、未知命令、
+  `group_reply=none`/黑名单群生效数用例；测试总数 151。
+
 ## v0.7.2 (2026-10-17) — Heartflow 白名单来源可选
 
 ### 新增
 - **Heartflow 白名单两种来源**（`wpp_heartflow_whitelist_mode`）：
   - `auto`（默认）：参考 WPP 群白名单，Heartflow 白名单 = 群白名单 + 显式
-    `proactive_groups`；
+    `proactive_groups`，再与群白名单取交集；
   - `custom`：使用 `wpp_heartflow_groups` 单独设置，适合“群白名单很大，
     只让心流观察其中几个群”。
 - **强制不变量：群白名单必须包括心流白名单**。`custom` 中不在
