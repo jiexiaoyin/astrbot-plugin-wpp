@@ -397,6 +397,41 @@ class WppClient:
         # 非幂等: 网络错误不重试, 避免重复发送
         return await self._post("/Msg/SendTxt", body, retry_safe=False)
 
+    async def send_app_xml(self, to_wxid: str, xml: str, app_type: int = 5) -> dict:
+        """POST /api/Msg/ShareLink — 发送 appmsg XML (引用回复/链接卡片)。
+
+        引用回复: Type=5 + Xml 内 `<type>57</type>` (vendor /Msg/Quote 不可用时的
+        gewe 范式, 见 wpp-openclaw quote-reply.js)。
+        """
+        return await self._post(
+            "/Msg/ShareLink",
+            {"ToWxid": to_wxid, "Type": app_type, "Xml": xml},
+            retry_safe=False,
+        )
+
+    async def send_location(
+        self,
+        to_wxid: str,
+        latitude: float,
+        longitude: float,
+        label: str = "",
+        poi_name: str = "",
+    ) -> dict:
+        """POST /api/Msg/ShareLocation — 发送位置卡片 (X=纬度, Y=经度)。"""
+        return await self._post(
+            "/Msg/ShareLocation",
+            {
+                "ToWxid": to_wxid,
+                "X": latitude,
+                "Y": longitude,
+                "Label": label,
+                "Poiname": poi_name,
+                "Scale": 16,
+                "Infourl": "",
+            },
+            retry_safe=False,
+        )
+
     async def send_image(self, to_wxid: str, image_ref: str) -> dict:
         """POST /api/Msg/UploadImg — 发图片。
 

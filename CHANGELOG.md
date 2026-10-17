@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.5.0 (2026-10-17) — 出站引用回复 / 链接卡片 / 位置 / AtAll
+
+### 新增
+- **引用回复**：出站 `Reply` 组件 + 后续短文本合并为 appmsg `type=57`，走
+  `/Msg/ShareLink`（vendor `/Msg/Quote` 不可用的 gewe 范式）；`title/des` 为回复正文，
+  `refermsg` 携带 `svrid`（Reply.id）与 `fromusr`（Reply.sender_id）
+  - 正文超过 500 字符时降级为普通文本，避免截断长回复
+- **链接卡片**：`Share(url, title, content, image)` → `type=5` appmsg XML
+- **位置**：`Location(lat, lon, title, content)` → `/Msg/ShareLocation`（X=纬度, Y=经度）
+- **AtAll**：`AtAll` 不再被丢弃，`At` 字段传 `all`
+- 新增 `build_quote_reply_xml` / `build_share_link_xml` 纯函数（XML 转义）
+
+### 测试
+- 新增 `tests/test_send.py`（7 个用例）
+- 测试总数 70
+
 ## v0.4.1 (2026-10-17) — 语音缺失转写时接入 AstrBot STT
 
 ### 新增

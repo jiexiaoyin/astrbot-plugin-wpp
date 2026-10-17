@@ -5,8 +5,8 @@ AstrBot 规范:
     而不是自己猜 `file` / `url` 的格式 (见 docs/zh/dev/plugin-platform-adapter.md)
   - 长文本按 markdown-aware 规则分片后逐条发送 (vendor SendTxt 超长会失败/截断)
 
-支持组件: Plain / At / Image / File / Record / Video。
-Reply 等出站引用暂不支持, 记录 debug 日志后跳过。
+支持组件: Plain / At / AtAll / Image / File / Record / Video / Reply / Share / Location。
+Reply 引用回复走 appmsg XML (type=57); Share 走链接卡片; Location 走位置卡片。
 """
 
 from __future__ import annotations
@@ -16,12 +16,24 @@ import re
 from typing import Any
 
 from astrbot import logger
-from astrbot.api.message_components import At, File, Image, Plain, Record, Reply, Video
+from astrbot.api.message_components import (
+    At,
+    File,
+    Image,
+    Location,
+    Plain,
+    Record,
+    Reply,
+    Share,
+    Video,
+)
 
 from .wpp_client import WppClient
 
 # 单条文本上限。wpp-openclaw 实测 6000 字符可用
 TEXT_CHUNK_LIMIT = 6000
+# 引用回复气泡文本上限 (wpp-openclaw buildQuoteReplyXml 取 500)
+QUOTE_TEXT_LIMIT = 500
 MAX_MEDIA_SEND_BYTES = 100 * 1024 * 1024
 
 
@@ -135,14 +147,32 @@ async def send_chain(
     """按消息链顺序发送。单个组件失败只记日志, 不中断后续组件。"""
     text_buf: list[str] = []
     ats: list[str] = []
+    pending_reply: Reply | None = None
 
     async def flush_text() -> None:
-        nonlocal ats
+        nonlocal ats, pending_reply
         if not text_buf:
             ats = []
+            pending_reply = None
             return
         text = "\n".join(t for t in text_buf if t)
         text_buf.clear()
+
+        # 引用回复: Reply 后紧跟的短文本合并成 type=57 appmsg 一次发送
+        if pending_reply is not None and text and len(text) <= QUOTE_TEXT_LIMIT:
+            try:
+                xml = build_quote_reply_xml(
+                    text,
+                    getattr(pending_reply, "id", ""),
+                    getattr(pending_reply, "sender_id", ""),
+                )
+                await api.send_app_xml(to_wxid, xml)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[WPP:{account_id}] send_quote failed: {e}")
+            pending_reply = None
+            ats = []
+            return
+
         first = True
         for chunk in chunk_text(text):
             try:
@@ -151,16 +181,25 @@ async def send_chain(
                 logger.warning(f"[WPP:{account_id}] send_text failed: {e}")
             first = False
         ats = []
+        pending_reply = None
 
     for comp in chain or []:
         if isinstance(comp, Plain):
             text_buf.append(comp.text or "")
         elif isinstance(comp, At):
+            # AtAll 是 At 子类 (qq="all"), vendor At 字段接受 "all"
             qq = str(getattr(comp, "qq", "") or "")
-            if qq and qq != "all":
+            if qq:
                 ats.append(qq)
         elif isinstance(comp, Reply):
-            logger.debug(f"[WPP:{account_id}] 出站引用回复暂不支持, 忽略 Reply 组件")
+            # 删除前一个 Reply, 只保留最后一个 (链中通常只有一个)
+            pending_reply = comp
+        elif isinstance(comp, Share):
+            await flush_text()
+            await _send_share(api, to_wxid, comp, account_id)
+        elif isinstance(comp, Location):
+            await flush_text()
+            await _send_location(api, to_wxid, comp, account_id)
         elif isinstance(comp, Image):
             await flush_text()
             await _send_image(api, to_wxid, comp, account_id)
@@ -177,6 +216,84 @@ async def send_chain(
             logger.debug(f"[WPP:{account_id}] 未支持的出站组件: {type(comp).__name__}")
 
     await flush_text()
+
+
+def _escape_xml(value: Any) -> str:
+    return (
+        str(value or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def build_quote_reply_xml(
+    content: str,
+    reply_id: str | int | None,
+    sender_id: str | int | None = "",
+) -> str:
+    """构造引用回复 appmsg (type=57)。
+
+    与 wpp-openclaw buildQuoteReplyXml 一致: 客户端主气泡读 `<title>`,
+    refermsg 极简化仅需 svrid (fromusr 可选, 兼容老客户端回查昵称)。
+    """
+    text = _escape_xml((content or "引用回复").strip()[:QUOTE_TEXT_LIMIT])
+    svrid = str(reply_id or "").strip()
+    fromusr = str(sender_id or "").strip()
+    if fromusr in ("0", "None"):
+        fromusr = ""
+    refer = ""
+    if svrid:
+        refer = f"<refermsg><svrid>{_escape_xml(svrid)}</svrid>"
+        if fromusr:
+            refer += f"<fromusr>{_escape_xml(fromusr)}</fromusr>"
+        refer += "</refermsg>"
+    return f"<appmsg><title>{text}</title><des>{text}</des><type>57</type>{refer}</appmsg>"
+
+
+def build_share_link_xml(
+    title: str,
+    desc: str = "",
+    url: str = "",
+    thumb_url: str = "",
+) -> str:
+    """构造链接卡片 appmsg (type=5)。"""
+    thumb = f"<thumburl>{_escape_xml(thumb_url)}</thumburl>" if thumb_url else ""
+    return (
+        f"<appmsg><title>{_escape_xml(title)}</title>"
+        f"<des>{_escape_xml(desc)}</des><type>5</type>"
+        f"<url>{_escape_xml(url)}</url>{thumb}<appattach></appattach></appmsg>"
+    )
+
+
+async def _send_share(api: WppClient, to_wxid: str, comp: Share, account_id: str) -> None:
+    try:
+        xml = build_share_link_xml(
+            getattr(comp, "title", "") or getattr(comp, "url", ""),
+            getattr(comp, "content", "") or "",
+            getattr(comp, "url", "") or "",
+            getattr(comp, "image", "") or "",
+        )
+        await api.send_app_xml(to_wxid, xml)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[WPP:{account_id}] send_share failed: {e}")
+
+
+async def _send_location(
+    api: WppClient, to_wxid: str, comp: Location, account_id: str
+) -> None:
+    try:
+        await api.send_location(
+            to_wxid,
+            float(getattr(comp, "lat", 0) or 0),
+            float(getattr(comp, "lon", 0) or 0),
+            str(getattr(comp, "content", "") or getattr(comp, "title", "") or ""),
+            str(getattr(comp, "title", "") or ""),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[WPP:{account_id}] send_location failed: {e}")
 
 
 async def _send_image(api: WppClient, to_wxid: str, comp: Image, account_id: str) -> None:
@@ -254,4 +371,11 @@ def _wav_duration_ms(path: str) -> int:
         return 0
 
 
-__all__ = ["TEXT_CHUNK_LIMIT", "chunk_text", "send_chain"]
+__all__ = [
+    "TEXT_CHUNK_LIMIT",
+    "QUOTE_TEXT_LIMIT",
+    "build_quote_reply_xml",
+    "build_share_link_xml",
+    "chunk_text",
+    "send_chain",
+]
