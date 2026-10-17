@@ -300,6 +300,25 @@ def src_msg_key(src: dict) -> str:
     )
 
 
+def src_svr_id(src: dict) -> str:
+    """引用回复 refermsg.svrid。
+
+    wpp-openclaw 实测: 微信服务端 svrid 无法主动获取, 入站消息的
+    `new_msg_id` 是最可靠的 fallback (vendor 全局唯一), 其次才是本地 msg_id。
+    AstrBot 核心的 Reply(id=message_obj.message_id) 会直接写进 refermsg,
+    因此 message_id 必须优先取 NewMsgId。
+    """
+    return safe_str(
+        src.get("new_msg_id")
+        or src.get("newMsgId")
+        or src.get("NewMsgId")
+        or src.get("svr_id")
+        or src.get("svrId")
+        or src.get("svrid")
+        or src_msg_key(src)
+    )
+
+
 def src_is_incoming(src: dict) -> bool:
     direction = safe_str(src.get("direction")).lower()
     if not direction:
@@ -557,7 +576,8 @@ def to_astrbot_message(
     # 若用它当 self_id, 核心的 At/引用唤醒判断 (At.qq == self_id) 会失效,
     # 心流等插件也无法正确区分"自己/群友"。
     abm.self_id = self_wxid or to_wxid
-    abm.message_id = msg_id or f"wpp-{ts}"
+    # 引用回复用 svrid (NewMsgId) 而非本地 msg_id, 见 src_svr_id()
+    abm.message_id = src_svr_id(src) or f"wpp-{ts}"
     abm.sender = MessageMember(
         user_id=from_wxid,
         nickname=safe_str(

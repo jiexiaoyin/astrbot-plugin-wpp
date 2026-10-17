@@ -232,6 +232,22 @@ class TestToAstrBotMessage(unittest.TestCase):
         self.assertEqual(abm._wpp_file_meta["attach_id"], "at1")
         self.assertEqual(abm._wpp_file_meta["filename"], "a.xlsx")
 
+    def test_message_id_prefers_new_msg_id_for_quote(self):
+        """引用回复 refermsg.svrid 用 NewMsgId, 不能用本地 msg_id。"""
+        src = {
+            "sender_id": "wxid_friend",
+            "msg_id": "local-1",
+            "new_msg_id": "900123456789",
+            "content": "你好",
+        }
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "")
+        self.assertEqual(abm.message_id, "900123456789")
+        self.assertEqual(msgs.src_svr_id(src), "900123456789")
+
+    def test_message_id_falls_back_to_msg_id(self):
+        src = {"sender_id": "wxid_friend", "msg_id": "local-1", "content": "你好"}
+        self.assertEqual(msgs.src_svr_id(src), "local-1")
+
 
 class TestPolicy(unittest.TestCase):
     def test_group_blacklist_denied(self):

@@ -146,7 +146,7 @@ async def send_chain(
 ) -> None:
     """按消息链顺序发送。单个组件失败只记日志, 不中断后续组件。"""
     text_buf: list[str] = []
-    ats: list[str] = []
+    ats: list[At] = []
     pending_reply: Reply | None = None
 
     async def flush_text() -> None:
@@ -161,8 +161,12 @@ async def send_chain(
         # 引用回复: Reply 后紧跟的短文本合并成 type=57 appmsg 一次发送
         if pending_reply is not None and text and len(text) <= QUOTE_TEXT_LIMIT:
             try:
+                # 群聊引用回复没有 At 字段, 与 wpp-openclaw 一致: 正文前加
+                # "@昵称 " 让被引用成员收到提醒 (核心 reply_with_mention
+                # 会先往链里插 At, 这里把它合并进引用气泡)。
+                quote_text = _quote_text_with_mention(to_wxid, text, ats)
                 xml = build_quote_reply_xml(
-                    text,
+                    quote_text,
                     getattr(pending_reply, "id", ""),
                     getattr(pending_reply, "sender_id", ""),
                 )
@@ -173,10 +177,11 @@ async def send_chain(
             ats = []
             return
 
+        at_ids = [str(getattr(a, "qq", "")) for a in ats if str(getattr(a, "qq", ""))]
         first = True
         for chunk in chunk_text(text):
             try:
-                await api.send_text(to_wxid, chunk, ats=ats if first else None)
+                await api.send_text(to_wxid, chunk, ats=at_ids if first else None)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[WPP:{account_id}] send_text failed: {e}")
             first = False
@@ -190,7 +195,7 @@ async def send_chain(
             # AtAll 是 At 子类 (qq="all"), vendor At 字段接受 "all"
             qq = str(getattr(comp, "qq", "") or "")
             if qq:
-                ats.append(qq)
+                ats.append(comp)
         elif isinstance(comp, Reply):
             # 删除前一个 Reply, 只保留最后一个 (链中通常只有一个)
             pending_reply = comp
@@ -216,6 +221,26 @@ async def send_chain(
             logger.debug(f"[WPP:{account_id}] 未支持的出站组件: {type(comp).__name__}")
 
     await flush_text()
+
+
+def _quote_text_with_mention(to_wxid: str, text: str, ats: list[At]) -> str:
+    """群聊引用回复: 把核心插入的 At 合并为正文的 "@昵称 " 前缀。
+
+    WeChat 的引用气泡 (appmsg type=57) 走 /Msg/ShareLink, 没有 At 字段,
+    因此与 wpp-openclaw 的 buildGroupMentionPrefix 一致, 用正文前缀提醒。
+    私聊 / 无昵称时保持原文。
+    """
+    if not to_wxid.endswith("@chatroom") or not ats:
+        return text
+    at = ats[0]
+    name = str(getattr(at, "name", "") or "").strip()
+    qq = str(getattr(at, "qq", "") or "").strip()
+    if not name or name == qq:
+        return text
+    prefix = f"@{name}"
+    if text.startswith(prefix):
+        return text
+    return f"{prefix} {text}".strip()
 
 
 def _escape_xml(value: Any) -> str:

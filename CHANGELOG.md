@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.1 (2026-10-17) — 群聊回复引用 + @ 发送人
+
+### 修复
+- **群聊回复不引用原消息、不 @ 发送人**：补齐 AstrBot 标准出站装饰的
+  平台侧支持。核心开启 `platform_settings.reply_with_mention` /
+  `reply_with_quote` 后会插入 `At` / `Reply` 组件，适配器现在能正确发送：
+  - `Reply.id` 改用入站 `NewMsgId`（svrid），不再用本地 `msg_id`；
+    `Reply` 缺发送者时由 `WppMessageEvent.send()` 从当前消息补全 `fromusr`
+  - 引用气泡（appmsg type=57）没有 At 字段，群聊时把 `At.name` 合并为
+    正文 `@昵称 ` 前缀（与 wpp-openclaw `buildGroupMentionPrefix` 一致）
+  - 普通文本回复仍走 `At` 字段；`AtAll` 行为不变
+
+### 配置
+- 生产已开启 `platform_settings.reply_with_mention=true` 与
+  `reply_with_quote=true`（AstrBot Dashboard → 平台设置）。
+- 该行为由 AstrBot 核心控制，插件不做额外开关；私聊/群聊均生效。
+
+### 测试
+- 新增引用+@、私聊不加前缀、Reply 发送者补全、NewMsgId 优先级用例
+- 测试总数 96；真实主路径冒烟 20/20
+
 ## v0.6.0 (2026-10-17) — 主动回复候选群 + 媒体懒加载
 
 ### 新增

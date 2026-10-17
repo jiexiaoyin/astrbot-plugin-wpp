@@ -67,6 +67,13 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 **出站**：文本（markdown 分片）、图片、文件、语音、视频、`At`/`AtAll`、引用回复（appmsg type=57）、链接卡片（`Share`）、位置（`Location`）。
 
+**回复装饰（AstrBot 标准）**：在 AstrBot「平台设置」中开启
+`reply_with_mention`（回复时 @ 发送人）和 `reply_with_quote`（回复时引用原消息）
+后，适配器会把核心插入的 `At` / `Reply` 正确落到微信：
+- 引用 `refermsg.svrid` 使用入站 `NewMsgId`（不是本地 `msg_id`）；
+- 群聊引用气泡没有 `At` 字段，自动在正文前加 `@昵称 `；
+- 普通文本回复使用 vendor `At` 字段。
+
 ### 🛡 完善的接入能力
 - **系统消息静默（内置，任何模式生效）**：公众号（`gh_`）、微信团队、微信支付、服务通知、财付通、微信安全中心、订阅号消息等系统会话，以及状态/系统/撤回消息、红包/转账卡片，都不会触发 AI
 - **私聊黑名单**：`wpp_block_users` / `/block`，全部放行模式下排除指定 wxid，群聊里也屏蔽该成员
