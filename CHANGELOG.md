@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.6.0 (2026-10-17) — 主动回复候选群 + 媒体懒加载
+
+### 新增
+- **主动回复候选群 `proactive_groups`**：按群显式 opt-in，未 @ 的群消息也会
+  放行进入 AstrBot，但适配器**不设置唤醒标志、不强制回复**；是否接话由
+  Heartflow / 内置 `active_reply` 等决策插件判断。
+  - 单账号：`wpp_proactive_groups`
+  - 多账号：`wpp_accounts[].proactive_groups`
+  - filehelper：`/proactive add|del|list <群ID>`，`list` 会打印对应的
+    `unified_msg_origin`（供 Heartflow 白名单使用）
+- **准入与唤醒解耦**：新增 `wpp_policy.classify()`，返回 `allowed / at_me /
+  proactive / reason`；`is_allowed()` 保留为兼容布尔接口。
+- **媒体懒加载**：未 @ 放行的群消息只构造占位组件；图片/文件/视频在
+  `on_waiting_llm_request`（真正要调用 LLM 前）才下载。语音仍即时下载，
+  保证 `PreProcessStage` 的 silk→wav + STT 不被跳过。
+- `enrich_media()` 新增 `include` / `exclude` 参数，支持按媒体类型选择性下载。
+
+### 修复
+- **`group_reply="all"` 语义文档纠正**：它表示“放行所有群消息（观察模式）”，
+  并不强制回复；未 @ 且无唤醒前缀时仍需决策插件设置 `is_at_or_wake_command`。
+- **图片消息保留占位 `Plain("[图片]")`**：未 @ 图片懒加载时消息链不再为空，
+  避免内置群聊上下文/主动回复插件误判为“没有可处理内容”。
+
+### 准入顺序（群聊）
+`block_users → blacklist_groups → 群白名单 → group_reply=none →
+已 @（正常唤醒）→ proactive_groups（未 @ 放行）→ require_at_mention →
+group_reply=all（观察放行）→ 其他拒绝`
+
+### 测试
+- 新增 `tests/test_proactive.py`（18 个用例）
+- 测试总数 90
+- 真实主路径冒烟 20/20（含 proactive 放行、懒加载、语音即时下载）
+
 ## v0.5.1 (2026-10-17) — self_id 修复 (群聊 @ 唤醒/心流兼容)
 
 ### 修复

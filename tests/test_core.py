@@ -121,6 +121,22 @@ class TestToAstrBotMessage(unittest.TestCase):
         self.assertEqual(abm._wpp_image_meta["to_wxid"], "123@chatroom")
         self.assertEqual(abm._wpp_image_meta["cdn"], {"file_aes_key": "k", "file_no": "n"})
 
+    def test_image_keeps_placeholder_plain_for_lazy_media(self):
+        """未 @ 图片懒加载时消息链不能为空, 否则内置主动回复插件会跳过。"""
+        src = {
+            "sender_id": "wxid_friend",
+            "msg_type": 3,
+            "chatroom_id": "123@chatroom",
+            "local_id": "img_2",
+            "image": {"data_len": 10, "cdn_download_contexts": [
+                {"file_aes_key": "k", "file_no": "n"}
+            ]},
+        }
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
+        self.assertEqual(len(abm.message), 1)
+        self.assertEqual(type(abm.message[0]).__name__, "Plain")
+        self.assertEqual(abm.message_str, "[图片]")
+
     def test_reply_context_creates_reply_component(self):
         src = {
             "sender_id": "wxid_friend",

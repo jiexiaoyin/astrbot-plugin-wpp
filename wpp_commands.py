@@ -27,6 +27,7 @@ class FilehelperCommands:
             ("/group add|del <群ID> [群ID...]", "群白名单增删 (批量)", self._group),
             ("/group list", "查看群白名单", self._group),
             ("/blacklist add|del|list <群ID> [群ID...]", "黑名单群管理 (批量)", self._blacklist),
+            ("/proactive add|del|list <群ID> [群ID...]", "主动回复候选群 (未@也放行, 不强制回复)", self._proactive),
             ("/mode atbot|none|all", "群回复模式", self._mode),
             ("/at on|off", "群聊是否必须@才回复", self._at),
             ("/help", "显示本帮助", self._help),
@@ -200,19 +201,79 @@ class FilehelperCommands:
         else:
             await reply("用法: /blacklist add <群ID> [群ID...] | del <群ID> [群ID...] | list")
 
+    async def _proactive(self, args: list[str], reply) -> None:
+        """主动回复候选群: 未 @ 消息也放行, 但由决策插件决定是否回复。"""
+        acct = self.account
+        action = (args[0] if args else "").strip().lower()
+        targets = split_args(args[1:])
+
+        def _umo(group_id: str) -> str:
+            pid = str(getattr(acct.platform, "instance_id", "") or "wpp")
+            return f"{pid}:GroupMessage:{group_id}"
+
+        if action == "list" or (action == "" and not targets):
+            groups = sorted(acct.proactive_groups)
+            lines = [f"👀 主动回复候选群 ({len(groups)}):"]
+            if groups:
+                for g in groups:
+                    lines.append(f"- {g}")
+                    lines.append(f"  UMO: {_umo(g)}")
+            else:
+                lines.append("(空)")
+            lines.append("说明: 只放行未@消息, 不强制回复; 由 Heartflow/active_reply 决定")
+            await reply("\n".join(lines))
+            return
+
+        if action == "add" and targets:
+            added = [t for t in targets if t not in acct.proactive_groups]
+            acct.proactive_groups.update(targets)
+            acct.save_policy()
+            await reply(
+                f"✅ 已加入主动回复候选群: {', '.join(added) or '(均已存在)'}\n"
+                f"当前 ({len(acct.proactive_groups)}): "
+                f"{', '.join(sorted(acct.proactive_groups))}\n"
+                "注意: 只放行未@消息, 不会强制回复; 请同时启用 Heartflow 等决策插件"
+            )
+            return
+
+        if action == "del" and targets:
+            removed = [t for t in targets if t in acct.proactive_groups]
+            missing = [t for t in targets if t not in acct.proactive_groups]
+            for t in removed:
+                acct.proactive_groups.discard(t)
+            acct.save_policy()
+            msg = f"✅ 已移出主动回复候选群: {', '.join(removed) or '(无)'}"
+            if missing:
+                msg += f"\n⚠️ 不在名单: {', '.join(missing)}"
+            msg += (
+                f"\n当前 ({len(acct.proactive_groups)}): "
+                f"{', '.join(sorted(acct.proactive_groups)) or '(空)'}"
+            )
+            await reply(msg)
+            return
+
+        await reply(
+            "用法: /proactive add <群ID> [群ID...] | "
+            "/proactive del <群ID> [群ID...] | /proactive list"
+        )
+
     async def _mode(self, args: list[str], reply) -> None:
         acct = self.account
         mode = (args[0] if args else "").strip().lower()
         if mode not in ("atbot", "none", "all"):
             await reply(
                 "用法: /mode atbot|none|all\n"
-                "atbot=只回@机器人的群消息 / none=忽略群消息 / all=群消息都回\n"
+                "atbot=只放行@机器人的群消息 / none=忽略群消息 / "
+                "all=放行所有群消息(观察模式, 不强制回复)\n"
                 f"当前: {acct.group_reply}"
             )
             return
         acct.group_reply = mode
         acct.save_policy()
-        await reply(f"✅ 群消息回复模式已设为: {mode}\n(atbot=只回@ / none=忽略群 / all=都回)")
+        await reply(
+            f"✅ 群消息准入模式已设为: {mode}\n"
+            "(atbot=只放行@ / none=忽略群 / all=放行所有群消息, 不强制回复)"
+        )
 
     async def _at(self, args: list[str], reply) -> None:
         acct = self.account
@@ -224,7 +285,7 @@ class FilehelperCommands:
         elif mode in ("off", "0", "false"):
             acct.require_at_mention = False
             acct.save_policy()
-            await reply("✅ 群聊已解除必须 @ (白名单群内非@也可触发)")
+            await reply("✅ 群聊已解除必须 @ (主动候选群内的未@消息仍由决策插件判断)")
         else:
             await reply(
                 f"用法: /at on|off\n当前: {'on (必须@)' if acct.require_at_mention else 'off (不必@)'}"

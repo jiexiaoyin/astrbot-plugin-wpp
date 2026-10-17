@@ -10,11 +10,13 @@
 
 import asyncio
 
+from astrbot import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
 from .wpp_client import WppClient
+from .wpp_media import enrich_media
 
 # 触发平台适配器注册: AstrBot 加载插件目录是 namespace package,
 # 不执行 __init__ 里的 import; 必须在 main 模块顶层 import wpp_adapter,
@@ -35,6 +37,32 @@ class WppPlugin(Star):
             ["POST"],
             "查询 WPP 账号在线信息 (X-Access-Token)",
         )
+
+    @filter.on_waiting_llm_request()
+    async def wpp_lazy_media(self, event: AstrMessageEvent):
+        """未 @ 群消息的媒体懒加载: 只在真正要调用 LLM 前下载。
+
+        WPP 适配器对主动候选群的未 @ 消息只构造占位组件; 这个钩子在
+        `collect_initial_request` 之前执行, 补齐图片/文件/视频, 避免群里
+        每条消息都提前下载媒体。语音已在适配器层即时下载 (保证 STT)。
+        """
+        if event.get_platform_name() != "wpp":
+            return
+        account = event.get_extra("_wpp_lazy_media")
+        if account is None:
+            return
+        event.set_extra("_wpp_lazy_media", None)  # 只消费一次
+        msg = getattr(event, "message_obj", None)
+        if msg is None:
+            return
+        try:
+            paths = await enrich_media(account._api, msg, exclude={"voice"})
+            for path in paths:
+                event.track_temporary_local_file(path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"[WPP:{getattr(account, 'account_id', '-')}] 懒加载媒体失败: {e}"
+            )
 
     async def web_account_info(self):
         """输入 X-Access-Token, 返回该 token 绑定的微信账号在线状态/wxid。

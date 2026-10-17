@@ -71,7 +71,8 @@ def _parse_accounts(platform_config: dict) -> list[dict]:
     """解析账号配置列表。
 
     优先 wpp_accounts (JSON 数组); 为空则回退到单账号 (wpp_auth_token + 顶层白名单)。
-    返回 [{id, authcode, allow_users, group_reply, blacklist_groups, require_at_mention, base_url, ws_url}]
+    返回 [{id, authcode, allow_users, group_reply, blacklist_groups,
+           require_at_mention, proactive_groups, base_url, ws_url}]
     """
     base_url = str(platform_config.get("wpp_base_url", "http://127.0.0.1:18062")).rstrip("/")
     ws_url = str(platform_config.get("wpp_ws_url", "") or "").strip()
@@ -108,6 +109,7 @@ def _parse_accounts(platform_config: dict) -> list[dict]:
                 "blacklist_groups": _as_csv(acct.get("blacklist_groups", "")),
                 "block_users": _as_csv(acct.get("block_users", "")),
                 "require_at_mention": _as_bool(acct.get("require_at_mention")),
+                "proactive_groups": _as_csv(acct.get("proactive_groups", "")),
                 "base_url": str(acct.get("base_url") or base_url).rstrip("/"),
                 "ws_url": str(acct.get("ws_url") or ws_url).strip(),
             })
@@ -125,6 +127,7 @@ def _parse_accounts(platform_config: dict) -> list[dict]:
             "blacklist_groups": set(),
             "block_users": _as_csv(platform_config.get("wpp_block_users", "")),
             "require_at_mention": False,
+            "proactive_groups": _as_csv(platform_config.get("wpp_proactive_groups", "")),
             "base_url": base_url,
             "ws_url": ws_url,
         }]
@@ -147,7 +150,7 @@ WPP_CONFIG_METADATA = {
     "wpp_accounts": {
         "description": "多账号模式: 账号列表 (JSON 数组)",
         "type": "string",
-        "hint": '多账号时用。JSON 数组, 每元素: {"id":"xieyin","authcode":"xxx","allow_users":"","block_users":"","group_reply":"atbot","blacklist_groups":"","require_at_mention":false}。留空=单账号(wpp_auth_token)',
+        "hint": '多账号时用。JSON 数组, 每元素: {"id":"xieyin","authcode":"xxx","allow_users":"","block_users":"","group_reply":"atbot","blacklist_groups":"","require_at_mention":false,"proactive_groups":""}。留空=单账号(wpp_auth_token)',
     },
     "wpp_allow_users": {
         "description": "单账号模式: 白名单 wxid (逗号分隔)",
@@ -162,7 +165,12 @@ WPP_CONFIG_METADATA = {
     "wpp_group_reply": {
         "description": "单账号模式: 群消息回复模式",
         "type": "string",
-        "hint": "仅单账号时用。atbot=只回@ / none=忽略群 / all=都回",
+        "hint": "仅单账号时用。atbot=只放行@ / none=忽略群 / all=放行所有群消息(观察模式, 不强制回复)",
+    },
+    "wpp_proactive_groups": {
+        "description": "单账号模式: 主动回复候选群 (逗号分隔群ID)",
+        "type": "string",
+        "hint": "仅单账号时用。这些群的未@消息也会放行给 AstrBot, 但适配器不唤醒、不强制回复; 由 Heartflow/内置 active_reply 决定是否接话。留空=关闭。",
     },
     "wpp_ws_url": {
         "description": "WS 实时消息通道地址 (vendor /ws/sync)",
@@ -189,6 +197,7 @@ WPP_CONFIG_METADATA = {
         "wpp_allow_users": "",
         "wpp_block_users": "",
         "wpp_group_reply": "atbot",
+        "wpp_proactive_groups": "",
         "wpp_ws_url": "",
         "wpp_webhook_enabled": False,
     },
@@ -247,6 +256,7 @@ class WppPlatformAdapter(Platform):
                 blacklist_groups=acfg.get("blacklist_groups") or set(),
                 block_users=acfg.get("block_users") or set(),
                 require_at_mention=acfg.get("require_at_mention", False),
+                proactive_groups=acfg.get("proactive_groups") or set(),
             )
             self.accounts.append(acct)
             logger.info(

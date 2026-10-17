@@ -652,7 +652,10 @@ def to_astrbot_message(
         if not cdn_ctx:
             cdn_ctx = _pick_cdn_context([img_obj.get("cdn_download_context")])
         abm.message_str = "[图片]"
-        abm.message = []
+        # 保留占位 Plain: 未 @ 消息懒加载时消息链不能为空,
+        # 否则内置群聊上下文/主动回复插件会认为"没有可处理内容"。
+        # enrich_media 会用真正的 Image 替换它。
+        abm.message = [Plain("[图片]")]
         # DownloadImg 的 to_wxid: 私聊=机器人自己, 群聊=群 ID (与 wpp-openclaw 一致)
         abm._wpp_image_meta = {
             "msg_id": local_id,

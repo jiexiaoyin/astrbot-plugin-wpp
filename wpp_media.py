@@ -58,12 +58,29 @@ def _non_media_prefix(msg: AstrBotMessage) -> list[Any]:
     ]
 
 
-async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
-    """就地补充消息链中的媒体组件, 返回需要登记清理的临时文件路径。"""
+async def enrich_media(
+    api: WppClient,
+    msg: AstrBotMessage,
+    *,
+    include: set[str] | None = None,
+    exclude: set[str] | None = None,
+) -> list[str]:
+    """就地补充消息链中的媒体组件, 返回需要登记清理的临时文件路径。
+
+    include / exclude 用于选择性下载 (类型: image / file / voice / video):
+      - 未 @ 的主动候选群消息: include={"voice"} 即时下载语音 (保证 STT),
+        其余媒体延迟到真正调用 LLM 时再下载。
+      - 懒加载钩子: exclude={"voice"} 避免重复下载语音。
+    """
     temp_files: list[str] = []
 
+    def _want(kind: str) -> bool:
+        return (include is None or kind in include) and (
+            exclude is None or kind not in exclude
+        )
+
     image_meta = getattr(msg, "_wpp_image_meta", None)
-    if image_meta:
+    if image_meta and _want("image"):
         path = await _download_image(api, image_meta)
         prefix = _non_media_prefix(msg)
         if path:
@@ -82,7 +99,7 @@ async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
             msg.message_str = "[图片下载失败]"
 
     file_meta = getattr(msg, "_wpp_file_meta", None)
-    if file_meta and file_meta.get("attach_id"):
+    if file_meta and file_meta.get("attach_id") and _want("file"):
         try:
             data = await api.download_file_binary(
                 file_meta.get("attach_id", ""),
@@ -113,7 +130,7 @@ async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
             msg.message = _non_media_prefix(msg) + [Plain("[文件] (下载失败)")]
 
     voice_meta = getattr(msg, "_wpp_voice_meta", None)
-    if voice_meta and voice_meta.get("msg_id"):
+    if voice_meta and voice_meta.get("msg_id") and _want("voice"):
         try:
             data = await api.download_voice_binary(
                 str(voice_meta.get("msg_id", "")),
@@ -143,7 +160,7 @@ async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
             msg.message = _non_media_prefix(msg) + [Plain("[语音] (下载失败)")]
 
     video_meta = getattr(msg, "_wpp_video_meta", None)
-    if video_meta and video_meta.get("msg_id"):
+    if video_meta and video_meta.get("msg_id") and _want("video"):
         try:
             data = await api.download_video(
                 video_meta.get("msg_id", ""),

@@ -43,7 +43,7 @@ from .wpp_messages import (
     skip_reason,
     to_astrbot_message,
 )
-from .wpp_policy import PolicySnapshot, is_allowed
+from .wpp_policy import PolicySnapshot, classify
 from .wpp_storage import AccountStore
 
 QUEUE_MAXSIZE = 1000
@@ -69,6 +69,7 @@ class WppAccount:
         blacklist_groups: set[str] | None = None,
         block_users: set[str] | None = None,
         require_at_mention: bool = False,
+        proactive_groups: set[str] | None = None,
     ) -> None:
         self.platform = platform
         self.account_id = account_id
@@ -88,6 +89,8 @@ class WppAccount:
         self.blacklist_groups: set[str] = set(blacklist_groups or ())
         self.block_users: set[str] = set(block_users or ())
         self.require_at_mention = require_at_mention
+        # 主动回复候选群: 未 @ 消息也放行, 但适配器不唤醒, 由决策插件决定
+        self.proactive_groups: set[str] = set(proactive_groups or ())
         self._load_policy_file()
         self._whitelist_mtime = self.store.config_mtime()
 
@@ -116,6 +119,7 @@ class WppAccount:
         self._ignored_since_report: dict[str, int] = {}
         self._last_filter_report = time.monotonic()
         self._drop_since_report = 0
+        self._observe_since_report = 0
 
         # filehelper 命令 (账号级)
         self.filehelper = FilehelperCommands(self)
@@ -293,8 +297,8 @@ class WppAccount:
             f"content={content[:40]!r} self_wxid={self._self_wxid!r}"
         )
 
-        # 白名单/群策略
-        if not is_allowed(
+        # 白名单/群策略 (只决定"是否进入 AstrBot", 不决定是否唤醒/回复)
+        decision = classify(
             self.policy_snapshot(),
             from_wxid,
             is_group,
@@ -302,11 +306,12 @@ class WppAccount:
             content,
             recipient_id,
             at_list,
-        ):
+        )
+        if not decision.allowed:
             self._filtered_since_report += 1
             logger.debug(
                 f"[WPP:{self.account_id}] 被白名单/群策略过滤: "
-                f"from={from_wxid} group={chatroom_id or '-'}"
+                f"from={from_wxid} group={chatroom_id or '-'} reason={decision.reason}"
             )
             return
 
@@ -314,12 +319,27 @@ class WppAccount:
         if msg is None:
             return
 
-        # 媒体富化 (下载图片/文件/视频), 临时文件交给 AstrBot 事件结束清理
-        temp_files = await enrich_media(self._api, msg)
+        # 未 @ 的群消息 (主动候选群 / all 观察模式) 只构造占位组件:
+        #   - 语音仍即时下载, 否则会错过 PreProcessStage 的 STT;
+        #   - 图片/文件/视频延迟到 on_waiting_llm_request 真正要调 LLM 时再下载。
+        observe_only = is_group and not decision.at_me
+        if observe_only:
+            temp_files = await enrich_media(self._api, msg, include={"voice"})
+            self._observe_since_report += 1
+            logger.debug(
+                f"[WPP:{self.account_id}] 主动观察放行: from={from_wxid} "
+                f"group={chatroom_id} reason={decision.reason}"
+            )
+        else:
+            # 媒体富化 (下载图片/文件/视频/语音), 临时文件交给 AstrBot 事件结束清理
+            temp_files = await enrich_media(self._api, msg)
 
         # 主动发送路由: 记录 session → 本账号, 再按平台约定创建事件
         self.platform.bind_session(msg.session_id, self)
         event = self.platform.create_event(msg)
+        if observe_only:
+            # 懒加载媒体: main.py 的 on_waiting_llm_request 钩子会消费这个标记
+            event.set_extra("_wpp_lazy_media", self)
         for path in temp_files:
             event.track_temporary_local_file(path)
         self.platform.commit_event(event)
@@ -349,6 +369,7 @@ class WppAccount:
             allow_users=set(self.allow_users),
             block_users=set(self.block_users),
             blacklist_groups=set(self.blacklist_groups),
+            proactive_groups=set(self.proactive_groups),
             group_reply=self.group_reply,
             require_at_mention=self.require_at_mention,
             self_wxid=self._self_wxid,
@@ -377,6 +398,10 @@ class WppAccount:
             self.block_users = {str(u).strip() for u in bu if str(u).strip()}
         if data.get("require_at_mention") is not None:
             self.require_at_mention = bool(data["require_at_mention"])
+        # 只在文件里显式存在时覆盖, 避免旧配置文件把平台配置里的初始值清空
+        pg = data.get("proactive_groups")
+        if isinstance(pg, list):
+            self.proactive_groups = {str(g).strip() for g in pg if str(g).strip()}
 
     def save_policy(self) -> None:
         """持久化白名单/群策略 (atomic write)。"""
@@ -387,6 +412,7 @@ class WppAccount:
                 "blacklist_groups": sorted(self.blacklist_groups),
                 "block_users": sorted(self.block_users),
                 "require_at_mention": self.require_at_mention,
+                "proactive_groups": sorted(self.proactive_groups),
             })
             self._whitelist_mtime = self.store.config_mtime()
             logger.info(f"[WPP:{self.account_id}] 运行时配置已持久化 → {self.store.config_path}")
@@ -410,6 +436,7 @@ class WppAccount:
                         or self.blacklist_groups != old.blacklist_groups
                         or self.group_reply != old.group_reply
                         or self.require_at_mention != old.require_at_mention
+                        or self.proactive_groups != old.proactive_groups
                     ):
                         logger.info(f"[WPP:{self.account_id}] 配置文件外部修改已热更新")
 
@@ -420,10 +447,13 @@ class WppAccount:
                     self._filtered_since_report
                     or self._drop_since_report
                     or self._ignored_since_report
+                    or self._observe_since_report
                 ) and now - self._last_filter_report >= FILTER_REPORT_INTERVAL:
                     parts = []
                     if self._filtered_since_report:
                         parts.append(f"过滤 {self._filtered_since_report} 条 (白名单/群策略)")
+                    if self._observe_since_report:
+                        parts.append(f"主动观察放行 {self._observe_since_report} 条 (未@, 由决策插件判断)")
                     if self._ignored_since_report:
                         detail = ", ".join(
                             f"{k}={v}" for k, v in sorted(self._ignored_since_report.items())
@@ -440,6 +470,7 @@ class WppAccount:
                     self._filtered_since_report = 0
                     self._ignored_since_report = {}
                     self._drop_since_report = 0
+                    self._observe_since_report = 0
                     self._last_filter_report = now
             except asyncio.CancelledError:
                 break

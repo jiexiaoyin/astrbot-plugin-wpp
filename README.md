@@ -14,7 +14,7 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 **让微信成为 AstrBot 的一等平台**：微信消息 → WPP vendor → 本适配器 → AstrBot 核心 (LLM/命令/插件)，回复自动回微信。
 
-> 🚀 **核心亮点**：**WS 实时主通道**（不断连、自动重连）+ **单实例多账号**（一个适配器管多个微信，通过 authcode 隔离）+ **全类型媒体**（图片/语音/文件/视频全部 AI 可读）+ **filehelper 命令**（文件助手发指令管理白名单）。
+> 🚀 **核心亮点**：**WS 实时主通道**（不断连、自动重连）+ **单实例多账号**（一个适配器管多个微信，通过 authcode 隔离）+ **全类型媒体**（图片/语音/文件/视频全部 AI 可读）+ **主动回复候选群**（未 @ 也放行，由 Heartflow 等插件决定是否接话）+ **filehelper 命令**（文件助手发指令管理白名单）。
 
 ---
 
@@ -71,14 +71,16 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 - **系统消息静默（内置，任何模式生效）**：公众号（`gh_`）、微信团队、微信支付、服务通知、财付通、微信安全中心、订阅号消息等系统会话，以及状态/系统/撤回消息、红包/转账卡片，都不会触发 AI
 - **私聊黑名单**：`wpp_block_users` / `/block`，全部放行模式下排除指定 wxid，群聊里也屏蔽该成员
 - **白名单**：仅白名单 wxid 触发 AI（防陌生人骚扰）
-- **群消息策略**：`atbot`（只回@机器人）/ `none` / `all`
+- **群消息准入策略**：`atbot`（只放行 @ 机器人）/ `none` / `all`（放行所有群消息，观察模式，不强制回复）
+- **主动回复候选群**：按群 opt-in，未 @ 消息也放行给 AstrBot，但是否回复由 Heartflow / 内置 `active_reply` 决定
 - **filehelper 白名单命令**：在文件传输助手里发指令管理白名单（仿 wpp-openclaw），三域统一 **add/del/list**
   - `/user add|del <wxid> [wxid...]` 私聊白名单（支持批量）/ `/user list` 查看
   - `/block add|del|list <wxid> [wxid...]` 私聊黑名单（全部放行模式下排除指定人；群聊里也屏蔽该成员）
   - `/group add|del <群ID> [群ID...]` 群白名单（支持批量）/ `/group list` 查看
   - `/blacklist add|del|list <群ID> [群ID...]` 黑名单群（黑白名单**互斥**，加一边自动移另一边）
-  - `/mode atbot|none|all` 群回复模式热切
-  - `/at on|off` 群聊是否必须 @ 才回复
+  - `/proactive add|del|list <群ID> [群ID...]` 主动回复候选群（未 @ 也放行；`list` 会打印 UMO）
+  - `/mode atbot|none|all` 群消息准入模式热切
+  - `/at on|off` 群聊是否必须 @ 才回复（主动候选群优先）
   - `/help` 显示全部命令（**自动遍历命令注册表**，新命令自动进 help）— 运行时立即生效，**持久化**（重启不丢），无需改配置重启
   - **配置文件热更新**：手动编辑 `wpp_whitelist.json` 也自动生效（约 3 秒检测），无需重启
 - **多消息遍历**：vendor 一次推多条不遗漏
@@ -123,8 +125,8 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 | `wpp_account.py` | WppAccount 类 (单账号: WS + 有界队列/worker + 白名单 + 去重) |
 | `wpp_messages.py` | vendor 消息解析/转换 (纯函数, 含非消息事件过滤) |
 | `wpp_appmsg.py` | appmsg/XML 卡片结构化解析 (链接/小程序/位置/名片/合并转发/接龙) |
-| `wpp_policy.py` | 白名单/群回复策略 (纯函数) |
-| `wpp_media.py` | 图片/文件/视频下载 + 消息链富化 |
+| `wpp_policy.py` | 白名单/群准入策略 (纯函数, 含 proactive_groups) |
+| `wpp_media.py` | 图片/文件/语音/视频下载 + 消息链富化 (支持懒加载选择性下载) |
 | `wpp_send.py` | 出站消息链发送 + 长文本分片 |
 | `wpp_commands.py` | filehelper 管理命令 |
 | `wpp_storage.py` | 运行时数据持久化 (白名单/去重, 原子写) |
@@ -173,7 +175,8 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 | `wpp_accounts` | 二选一 | **多账号模式**：账号列表 JSON（见下方多账号章节）|
 | `wpp_allow_users` | — | **单账号模式**白名单 wxid（逗号分隔），空则所有私聊触发 |
 | `wpp_block_users` | — | **单账号模式**私聊黑名单 wxid（逗号分隔），全部放行时排除指定人；群聊里也屏蔽该成员 |
-| `wpp_group_reply` | — | **单账号模式**群消息策略: `atbot` / `none` / `all` |
+| `wpp_group_reply` | — | **单账号模式**群消息准入策略: `atbot` / `none` / `all`（`all`=放行所有群消息，观察模式，不强制回复）|
+| `wpp_proactive_groups` | — | **单账号模式**主动回复候选群（逗号分隔群 ID）；未 @ 消息也放行，是否回复由决策插件决定 |
 | `wpp_ws_url` | — | WS 实时通道地址（如 `wss://<vendor-domain>/ws/sync`），主通道 |
 | `wpp_webhook_enabled` | — | 是否启用 webhook 兜底（默认 `false`，仅 WS）|
 
@@ -190,13 +193,75 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 ```json
 [
   {"id": "xieyin", "authcode": "<authcode_账号1>", "allow_users": "<wxid_白名单>", "group_reply": "atbot"},
-  {"id": "yirong", "authcode": "<authcode_账号2>", "allow_users": "", "block_users": "<wxid_排除>", "group_reply": "all", "blacklist_groups": "<群id>@chatroom"},
+  {"id": "yirong", "authcode": "<authcode_账号2>", "allow_users": "", "block_users": "<wxid_排除>", "group_reply": "atbot", "proactive_groups": "<群id>@chatroom", "blacklist_groups": ""},
   {"id": "test",  "authcode": "xxx", "require_at_mention": true}
 ]
 ```
-每个账号字段：`id`（唯一）、`authcode`（必填）、`allow_users`/`block_users`/`group_reply`/`blacklist_groups`/`require_at_mention`（可选，默认同单账号）。
+每个账号字段：`id`（唯一）、`authcode`（必填）、`allow_users`/`block_users`/`group_reply`/`proactive_groups`/`blacklist_groups`/`require_at_mention`（可选，默认同单账号）。
 
 filehelper 命令输出带账号标识（如 `【WPP 命令 (账号 xieyin)】`），各账号命令互不影响。
+
+### 🤖 主动回复（群聊未 @）
+
+WPP 适配器只负责**准入**，不负责判断“要不要回复”。链路分三层：
+
+| 层 | 职责 |
+|---|---|
+| WPP 适配器 | 硬边界（系统/支付/黑名单/群策略）+ 准入；**不设置唤醒标志** |
+| 决策插件 | Heartflow / 内置 `active_reply` 决定是否主动接话 |
+| AstrBot 核心 | 上下文、限流、会话、LLM |
+
+#### 配置
+
+1. 把群加入主动候选名单（三选一）：
+   - Dashboard：`wpp_proactive_groups` / `wpp_accounts[].proactive_groups`
+   - filehelper：`/proactive add 123@chatroom`
+2. 启用一个决策插件（**只开一个**）：
+   - **Heartflow（推荐）**：`judge_provider_name` 指向便宜的判断模型，
+     `whitelist_enabled=true` + `chat_whitelist=["wpp:GroupMessage:123@chatroom"]`；
+     建议 `reply_threshold=0.7`、`min_reply_interval_seconds=180` 起步。
+   - **内置 active_reply**：`provider_ltm_settings.active_reply.enable=true`，
+     `method=possibility_reply`，`possibility_reply` 建议 0.05–0.1；
+     要求该群已有对话（先 @ 回复一次或 `/new`）。
+3. 可选：开启 `group_message_history_enable` / `group_icl_enable` 提供群聊上下文
+   （会增加 token 成本）。
+
+#### 安全默认值
+
+- **只加 `proactive_groups` 不会让机器人回复任何消息**：适配器不设
+  `is_at_or_wake_command`，只有决策插件批准后核心才会调用 LLM。
+- `group_reply=none`、黑名单群、`block_users` 仍然优先；`proactive_groups`
+  不能绕过它们。
+- 一个群必须先通过群白名单（若配置了群白名单）才会进入主动候选判断。
+
+#### UMO 格式
+
+Heartflow 白名单使用 `unified_msg_origin`，格式为：
+
+```
+<平台实例id>:GroupMessage:<群ID>
+```
+
+例如 `wpp:GroupMessage:123@chatroom`。用 `/proactive list` 可直接看到每个群
+对应的 UMO；多账号或自定义平台实例 id 时前缀会不同。
+
+#### 媒体懒加载
+
+未 @ 放行的消息只构造 `[图片]` / `[文件]` / `[视频]` 占位符：
+
+- 图片/文件/视频：在 `on_waiting_llm_request`（真正要调用 LLM 前）才下载；
+- 语音：仍即时下载，保证 AstrBot `PreProcessStage` 的 STT 正常；
+- 未触发回复的消息不会产生任何媒体下载。
+
+注意：懒加载发生在内置群聊上下文 handler 之后，因此当前图片不会进入
+`group_icl` 历史/图注，但会正常进入本次 LLM 请求。
+
+#### 灰度建议
+
+1. 先在一个低风险群测试，Heartflow 白名单只放这个群；
+2. 观察 1–3 天日志（`🔥 心流触发`、触发频率、误触发）；
+3. 调整阈值/冷却后再扩群；
+4. 回滚：`/proactive del <群ID>` 或关闭 Heartflow。
 
 ### 换新环境的自动适配
 配置 `wpp_base_url` + `wpp_auth_token` 后，插件**自动**：
