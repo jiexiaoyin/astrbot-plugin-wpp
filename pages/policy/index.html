@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>WPP 账号策略</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        max-width: 860px; margin: 24px auto; padding: 0 16px;
+        background: #f7f8fa; color: #1f2329;
+      }
+      h1 { font-size: 18px; margin-bottom: 4px; }
+      .sub { color: #86909c; font-size: 12px; margin-bottom: 16px; }
+      .card {
+        background: #fff; border-radius: 8px; padding: 18px 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 14px;
+      }
+      .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .name { font-size: 15px; font-weight: 600; }
+      .badge { font-size: 12px; color: #4e5969; background: #f2f3f5; padding: 2px 8px; border-radius: 10px; }
+      label { display: block; margin: 12px 0 4px; font-size: 13px; color: #4e5969; }
+      textarea, input[type=text], select {
+        width: 100%; padding: 8px 10px; border: 1px solid #dcdfe6;
+        border-radius: 6px; font-size: 13px; font-family: inherit;
+      }
+      textarea { min-height: 52px; resize: vertical; }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; }
+      .row > div { flex: 1; min-width: 220px; }
+      .checks { display: flex; gap: 20px; margin-top: 12px; font-size: 13px; color: #4e5969; }
+      button {
+        padding: 7px 16px; background: #165dff; color: #fff;
+        border: none; border-radius: 6px; font-size: 13px; cursor: pointer;
+      }
+      button:hover { background: #0e42d2; }
+      button:disabled { background: #a0aec0; cursor: not-allowed; }
+      button.ghost { background: #fff; color: #165dff; border: 1px solid #165dff; }
+      button.ghost:hover { background: #f0f5ff; }
+      .hint { font-size: 12px; color: #86909c; margin-top: 4px; }
+      .msg { font-size: 13px; margin-top: 10px; }
+      .ok { color: #00b42a; }
+      .err { color: #f53f3f; }
+      .stats { font-size: 12px; color: #86909c; margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>WPP 账号策略</h1>
+    <div class="sub">修改后立即落盘并同步 Heartflow 白名单；列表字段用逗号分隔，支持 wxid / 群 ID。</div>
+
+    <div class="card">
+      <div class="head">
+        <div>
+          <div class="name">Heartflow 白名单同步</div>
+          <div class="hint">把各账号群白名单 + 主动候选群同步到 Heartflow chat_whitelist</div>
+        </div>
+        <button id="syncBtn" class="ghost">立即同步</button>
+      </div>
+      <div id="syncMsg" class="msg"></div>
+    </div>
+
+    <div id="list"></div>
+
+    <script type="module">
+      const bridge = window.AstrBotPluginPage;
+      const list = document.getElementById("list");
+      const syncBtn = document.getElementById("syncBtn");
+      const syncMsg = document.getElementById("syncMsg");
+
+      await bridge.ready();
+
+      function esc(s) {
+        return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        })[c]);
+      }
+
+      function arrText(v) { return Array.isArray(v) ? v.join(",") : ""; }
+
+      function render(resp) {
+        const instances = (resp && resp.instances) || [];
+        if (!instances.length) {
+          list.innerHTML = `<div class="card"><div class="err">未找到已加载的 WPP 平台实例。</div></div>`;
+          return;
+        }
+        list.innerHTML = instances.map((inst) => {
+          const accounts = (inst.accounts || []).map((a) => `
+            <div class="card" data-instance="${esc(inst.id)}" data-account="${esc(a.id)}">
+              <div class="head">
+                <div class="name">${esc(a.id)}</div>
+                <button class="save">保存</button>
+              </div>
+              <div class="row">
+                <div>
+                  <label>私聊白名单 allow_users</label>
+                  <textarea data-field="allow_users">${esc(arrText(a.allow_users))}</textarea>
+                </div>
+                <div>
+                  <label>私聊黑名单 block_users</label>
+                  <textarea data-field="block_users">${esc(arrText(a.block_users))}</textarea>
+                </div>
+              </div>
+              <div class="row">
+                <div>
+                  <label>群黑名单 blacklist_groups</label>
+                  <textarea data-field="blacklist_groups">${esc(arrText(a.blacklist_groups))}</textarea>
+                </div>
+                <div>
+                  <label>主动回复候选群 proactive_groups</label>
+                  <textarea data-field="proactive_groups">${esc(arrText(a.proactive_groups))}</textarea>
+                </div>
+              </div>
+              <div class="row">
+                <div>
+                  <label>群消息模式 group_reply</label>
+                  <select data-field="group_reply">
+                    ${["atbot", "none", "all"].map((m) => `<option value="${m}" ${a.group_reply === m ? "selected" : ""}>${m}</option>`).join("")}
+                  </select>
+                </div>
+                <div>
+                  <label>群聊必须 @ 才放行</label>
+                  <div class="checks">
+                    <label style="margin:0;"><input type="checkbox" data-field="require_at_mention" ${a.require_at_mention ? "checked" : ""}/> require_at_mention</label>
+                  </div>
+                </div>
+              </div>
+              <div class="stats">
+                队列 ${esc(a.stats?.queue_size ?? 0)} · 去重 ${esc(a.stats?.dedup_size ?? 0)}
+                · 发送成功 ${esc(a.stats?.send?.sent ?? 0)} / 失败 ${esc(a.stats?.send?.failed ?? 0)}
+              </div>
+              <div class="msg"></div>
+            </div>`).join("");
+          return `<div class="card" style="background:#fafbfc;">
+            <div class="head">
+              <div><div class="name">实例 ${esc(inst.id)}</div>
+              <div class="hint">Heartflow 同步: ${inst.heartflow_sync_enabled ? "开启" : "关闭"}</div></div>
+            </div>
+            ${accounts || `<div class="hint">该实例没有账号</div>`}
+          </div>`;
+        }).join("");
+
+        document.querySelectorAll(".card[data-account] .save").forEach((btn) => {
+          btn.addEventListener("click", async () => {
+            const card = btn.closest(".card[data-account]");
+            const msg = card.querySelector(".msg");
+            const payload = {
+              instance_id: card.dataset.instance,
+              account_id: card.dataset.account,
+            };
+            card.querySelectorAll("[data-field]").forEach((el) => {
+              const field = el.dataset.field;
+              if (el.type === "checkbox") payload[field] = el.checked;
+              else if (field === "group_reply") payload[field] = el.value;
+              else payload[field] = el.value.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+            });
+            btn.disabled = true;
+            msg.className = "msg";
+            msg.textContent = "保存中...";
+            try {
+              const r = await bridge.apiPost("policy/update", payload);
+              if (r && r.error) throw new Error(r.message || r.error);
+              msg.className = "msg ok";
+              msg.textContent = "已保存，Heartflow 白名单已同步";
+            } catch (e) {
+              msg.className = "msg err";
+              msg.textContent = "保存失败: " + String(e);
+            } finally {
+              btn.disabled = false;
+            }
+          });
+        });
+      }
+
+      async function load() {
+        list.innerHTML = `<div class="card"><div class="hint">加载中...</div></div>`;
+        try {
+          const resp = await bridge.apiPost("policy", {});
+          if (resp && resp.error) throw new Error(resp.message || resp.error);
+          render(resp);
+        } catch (e) {
+          list.innerHTML = `<div class="card"><div class="err">加载失败: ${esc(e)}</div></div>`;
+        }
+      }
+
+      syncBtn.addEventListener("click", async () => {
+        syncBtn.disabled = true;
+        syncMsg.className = "msg";
+        syncMsg.textContent = "同步中...";
+        try {
+          const r = await bridge.apiPost("heartflow-sync", {});
+          if (r && r.error) throw new Error(r.message || r.error);
+          syncMsg.className = "msg ok";
+          syncMsg.textContent = "已同步: " + (r.synced || []).join(", ");
+        } catch (e) {
+          syncMsg.className = "msg err";
+          syncMsg.textContent = "同步失败: " + String(e);
+        } finally {
+          syncBtn.disabled = false;
+        }
+      });
+
+      load();
+    </script>
+  </body>
+</html>

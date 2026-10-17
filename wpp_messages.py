@@ -18,7 +18,7 @@ import re
 import time
 from typing import Any
 
-from astrbot.api.message_components import At, File, Plain, Reply
+from astrbot.api.message_components import At, Plain, Reply
 from astrbot.api.platform import AstrBotMessage, Group, MessageMember, MessageType
 
 from . import wpp_appmsg as appmsg
@@ -429,6 +429,8 @@ def skip_reason(src: dict, self_wxid: str = "") -> str | None:
     # ① 系统/服务会话 (公众号、微信团队、微信支付、服务通知、filehelper...)
     sys_id = system_sender(src)
     if sys_id:
+        if sys_id == "fmessage":
+            return "friend_request"
         return "official_account" if sys_id.startswith("gh_") else f"system:{sys_id}"
 
     sender = src_sender(src)
@@ -538,10 +540,41 @@ def build_reply_component(src: dict) -> Reply | None:
 
 
 # --------------------------------------------------------------------------- 转换
+def _build_group(group_id: str, profile: dict | None) -> Group:
+    """用预取的群资料构造 AstrBot Group; 没有资料时保持最小对象。"""
+    group = Group(group_id=group_id)
+    if not isinstance(profile, dict):
+        return group
+    name = safe_str(profile.get("name")).strip()
+    if name:
+        group.group_name = name
+    owner = safe_str(profile.get("owner")).strip()
+    if owner:
+        group.group_owner = owner
+    avatar = safe_str(profile.get("avatar")).strip()
+    if avatar:
+        group.group_avatar = avatar
+    members = profile.get("members")
+    if isinstance(members, dict) and members:
+        group.members = [
+            MessageMember(user_id=str(uid), nickname=safe_str(nick) or str(uid))
+            for uid, nick in members.items()
+            if str(uid).strip()
+        ]
+        group.member_count = safe_num(profile.get("member_count"), len(group.members)) or len(
+            group.members
+        )
+    elif profile.get("member_count"):
+        group.member_count = safe_num(profile.get("member_count"), 0)
+    return group
+
+
 def to_astrbot_message(
     src: dict,
     self_wxid: str = "",
     self_nickname: str = "",
+    sender_nickname: str = "",
+    group_profile: dict | None = None,
 ) -> AstrBotMessage | None:
     """单条 vendor 消息 src → AstrBotMessage。
 
@@ -586,12 +619,13 @@ def to_astrbot_message(
             or src.get("FromNick")
             or src.get("sender_name")
         )
+        or safe_str(sender_nickname)
         or from_wxid,
     )
     abm.raw_message = src
     abm.timestamp = ts
     if is_group:
-        abm.group = Group(group_id=chatroom_id)
+        abm.group = _build_group(chatroom_id, group_profile)
         abm.session_id = chatroom_id
     else:
         abm.session_id = from_wxid

@@ -12,6 +12,7 @@ import asyncio
 
 from astrbot import logger
 from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.event.filter import PermissionType
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
@@ -40,6 +41,25 @@ class WppPlugin(Star):
             self.web_account_info,
             ["POST"],
             "查询 WPP 账号在线信息 (X-Access-Token)",
+        )
+        # 策略管理页: 查看/修改各账号白名单、群策略、主动候选群
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/policy",
+            self.web_policy_query,
+            ["POST"],
+            "查询 WPP 账号策略",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/policy/update",
+            self.web_policy_update,
+            ["POST"],
+            "更新 WPP 账号策略",
+        )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/heartflow-sync",
+            self.web_heartflow_sync,
+            ["POST"],
+            "立即同步 WPP 群白名单到 Heartflow",
         )
 
     @filter.on_waiting_llm_request()
@@ -143,6 +163,100 @@ class WppPlugin(Star):
             return error_response(f"查询失败: {e}")
         finally:
             await client.close()
+
+    # ------------------------------------------------------------------ 策略管理
+    @staticmethod
+    def _account_policy_view(acct) -> dict:
+        return {
+            "id": acct.account_id,
+            "allow_users": sorted(acct.allow_users),
+            "block_users": sorted(acct.block_users),
+            "blacklist_groups": sorted(acct.blacklist_groups),
+            "proactive_groups": sorted(acct.proactive_groups),
+            "group_reply": acct.group_reply,
+            "require_at_mention": acct.require_at_mention,
+            "lazy_media": bool(getattr(acct, "lazy_media", True)),
+            "stats": acct.stats,
+        }
+
+    def _policy_instances(self) -> list[dict]:
+        return [
+            {
+                "id": getattr(inst, "instance_id", ""),
+                "heartflow_sync_enabled": bool(
+                    getattr(inst, "heartflow_sync_enabled", True)
+                ),
+                "accounts": [self._account_policy_view(a) for a in inst.accounts],
+            }
+            for inst in self._get_wpp_instances()
+        ]
+
+    def _find_account(self, instance_id: str = "", account_id: str = ""):
+        for inst in self._get_wpp_instances():
+            if instance_id and getattr(inst, "instance_id", "") != instance_id:
+                continue
+            for acct in getattr(inst, "accounts", []):
+                if not account_id or acct.account_id == account_id:
+                    return inst, acct
+        return None, None
+
+    async def web_policy_query(self):
+        instances = self._policy_instances()
+        return json_response({"instances": instances})
+
+    async def web_policy_update(self):
+        payload = await request.json(default={})
+        payload = payload if isinstance(payload, dict) else {}
+        inst, acct = self._find_account(
+            str(payload.get("instance_id", "") or "").strip(),
+            str(payload.get("account_id", "") or "").strip(),
+        )
+        if acct is None:
+            return error_response("未找到 WPP 账号")
+        changed = False
+        for field in (
+            "allow_users",
+            "block_users",
+            "blacklist_groups",
+            "proactive_groups",
+        ):
+            if field not in payload:
+                continue
+            value = payload.get(field)
+            if isinstance(value, str):
+                value = value.replace("，", ",").split(",")
+            if not isinstance(value, (list, tuple, set)):
+                return error_response(f"{field} 必须是数组")
+            setattr(acct, field, {str(v).strip() for v in value if str(v).strip()})
+            changed = True
+        if "group_reply" in payload:
+            mode = str(payload.get("group_reply", "") or "").strip()
+            if mode not in ("atbot", "none", "all"):
+                return error_response("group_reply 只支持 atbot / none / all")
+            acct.group_reply = mode
+            changed = True
+        if "require_at_mention" in payload:
+            acct.require_at_mention = bool(payload.get("require_at_mention"))
+            changed = True
+        if changed:
+            acct.save_policy()
+        if inst is not None:
+            inst.sync_heartflow_whitelist("dashboard")
+        return json_response(
+            {"ok": True, "account": self._account_policy_view(acct)}
+        )
+
+    async def web_heartflow_sync(self):
+        payload = await request.json(default={})
+        payload = payload if isinstance(payload, dict) else {}
+        target = str(payload.get("instance_id", "") or "").strip()
+        synced = []
+        for inst in self._get_wpp_instances():
+            if target and getattr(inst, "instance_id", "") != target:
+                continue
+            inst.sync_heartflow_whitelist("dashboard")
+            synced.append(getattr(inst, "instance_id", ""))
+        return json_response({"ok": True, "synced": synced})
 
     def _get_wpp_instances(self) -> list:
         """返回所有已注册的 wpp 平台适配器实例。"""
@@ -258,3 +372,110 @@ class WppPlugin(Star):
                 f"   长连接: {longlink.get('Message', longlink.get('Data', '无数据'))}"
             )
         yield event.plain_result("\n".join(lines))
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("wpp_policy")
+    async def wpp_policy(self, event: AstrMessageEvent):
+        """查看/修改 WPP 账号策略 (仅 AstrBot 管理员)。
+
+        用法:
+          /wpp_policy                         查看全部账号
+          /wpp_policy <账号> <字段> add <值...>
+          /wpp_policy <账号> <字段> del <值...>
+          /wpp_policy <账号> <字段> set <值...>
+          /wpp_policy <账号> group_reply set atbot|none|all
+          /wpp_policy <账号> require_at_mention set true|false
+
+        字段: allow_users / block_users / blacklist_groups / proactive_groups /
+              group_reply / require_at_mention
+        """
+        parts = event.message_str.strip().split()
+        if len(parts) <= 1:
+            lines = ["【WPP 账号策略】"]
+            for inst in self._policy_instances():
+                lines.append(f"实例 {inst['id']} (Heartflow 同步={inst['heartflow_sync_enabled']})")
+                for acct in inst["accounts"]:
+                    lines.append(
+                        f"  {acct['id']}: group_reply={acct['group_reply']} "
+                        f"allow={acct['allow_users']} proactive={acct['proactive_groups']}"
+                    )
+                    lines.append(
+                        f"    block={acct['block_users']} "
+                        f"blacklist={acct['blacklist_groups']} "
+                        f"require_at={acct['require_at_mention']}"
+                    )
+            yield event.plain_result("\n".join(lines))
+            return
+
+        if len(parts) < 4:
+            yield event.plain_result(
+                "用法: /wpp_policy <账号> <字段> <add|del|set> <值...>"
+            )
+            return
+
+        account_id, field, action = parts[1], parts[2], parts[3].lower()
+        values = parts[4:]
+        inst, acct = self._find_account(account_id=account_id)
+        if acct is None:
+            yield event.plain_result(f"未找到 WPP 账号: {account_id}")
+            return
+
+        list_fields = {
+            "allow_users",
+            "block_users",
+            "blacklist_groups",
+            "proactive_groups",
+        }
+        if field in list_fields:
+            target = set(getattr(acct, field))
+            if action == "set":
+                target = set(values)
+            elif action == "add":
+                target.update(values)
+            elif action == "del":
+                target.difference_update(values)
+            else:
+                yield event.plain_result("列表字段只支持 add / del / set")
+                return
+            setattr(acct, field, target)
+        elif field == "group_reply":
+            value = values[0].lower() if values else ""
+            if value not in ("atbot", "none", "all"):
+                yield event.plain_result("group_reply 只支持 atbot / none / all")
+                return
+            acct.group_reply = value
+        elif field == "require_at_mention":
+            value = (values[0].lower() if values else "").strip()
+            if value not in ("true", "false", "1", "0", "on", "off"):
+                yield event.plain_result("require_at_mention 只支持 true/false")
+                return
+            acct.require_at_mention = value in ("true", "1", "on")
+        else:
+            yield event.plain_result(f"不支持的字段: {field}")
+            return
+
+        acct.save_policy()
+        if inst is not None:
+            inst.sync_heartflow_whitelist("command")
+        yield event.plain_result(
+            f"已更新 {account_id}: group_reply={acct.group_reply} "
+            f"allow={sorted(acct.allow_users)} proactive={sorted(acct.proactive_groups)} "
+            f"require_at={acct.require_at_mention}"
+        )
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("wpp_sync")
+    async def wpp_sync(self, event: AstrMessageEvent):
+        """立即把 WPP 群白名单同步到 Heartflow (仅 AstrBot 管理员)。"""
+        parts = event.message_str.strip().split()
+        target = parts[1].strip() if len(parts) > 1 else ""
+        synced = []
+        for inst in self._get_wpp_instances():
+            if target and getattr(inst, "instance_id", "") != target:
+                continue
+            inst.sync_heartflow_whitelist("command")
+            synced.append(getattr(inst, "instance_id", ""))
+        if not synced:
+            yield event.plain_result(f"未找到 WPP 实例: {target}")
+            return
+        yield event.plain_result(f"已同步 Heartflow 白名单: {', '.join(synced)}")

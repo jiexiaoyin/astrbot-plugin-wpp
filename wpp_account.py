@@ -70,15 +70,26 @@ class WppAccount:
         block_users: set[str] | None = None,
         require_at_mention: bool = False,
         proactive_groups: set[str] | None = None,
+        lazy_media: bool = True,
+        send_interval_ms: int = 300,
+        repeat_guard_window: float = 300.0,
+        repeat_guard_limit: int = 2,
     ) -> None:
         self.platform = platform
         self.account_id = account_id
         self.authcode = authcode
         self.base_url = base_url
         self.ws_url = ws_url
+        self.lazy_media = bool(lazy_media)
 
         # API 客户端 (该账号 authcode)
-        self._api = WppClient(self.base_url, self.authcode)
+        self._api = WppClient(
+            self.base_url,
+            self.authcode,
+            send_interval=max(0, int(send_interval_ms or 0)) / 1000.0,
+            repeat_guard_window=max(0.0, float(repeat_guard_window or 0.0)),
+            repeat_guard_limit=max(1, int(repeat_guard_limit or 2)),
+        )
 
         # 运行时数据 (data/plugin_data/astrbot-plugin-wpp/accounts/<id>/)
         self.store = AccountStore(account_id)
@@ -120,6 +131,8 @@ class WppAccount:
         self._last_filter_report = time.monotonic()
         self._drop_since_report = 0
         self._observe_since_report = 0
+        # Heartflow 白名单周期性自愈 (启动/策略变更/热更新之外)
+        self._last_heartflow_sync = time.monotonic()
 
         # filehelper 命令 (账号级)
         self.filehelper = FilehelperCommands(self)
@@ -255,6 +268,38 @@ class WppAccount:
                 self._queue.task_done()
 
     # ------------------------------------------------------------------ 消息处理
+    async def _prefetch_group_profile(self, chatroom_id: str) -> dict | None:
+        """预取群资料 (带超时); 失败返回 None, 不影响消息进入 AstrBot。"""
+        getter = getattr(self._api, "get_group_profile", None)
+        if not callable(getter):
+            return None
+        try:
+            profile = await asyncio.wait_for(getter(chatroom_id), timeout=10)
+        except Exception as e:  # noqa: BLE001 - 预取失败不阻塞消息
+            logger.debug(f"[WPP:{self.account_id}] 群资料预取失败 {chatroom_id}: {e}")
+            return None
+        return profile if isinstance(profile, dict) else None
+
+    async def _prefetch_sender_nickname(self, from_wxid: str, src: dict) -> str:
+        """私聊缺昵称时查通讯录; 已有 fromNick 则不产生额外请求。"""
+        existing = safe_str(
+            src.get("fromNick")
+            or src.get("fromNickname")
+            or src.get("FromNick")
+            or src.get("sender_name")
+        ).strip()
+        if existing:
+            return ""
+        resolver = getattr(self._api, "resolve_nickname", None)
+        if not callable(resolver):
+            return ""
+        try:
+            nick = await asyncio.wait_for(resolver(from_wxid, ""), timeout=8)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[WPP:{self.account_id}] 私聊昵称解析失败 {from_wxid}: {e}")
+            return ""
+        return str(nick or "").strip()
+
     async def _process_src(self, src: dict) -> None:
         """处理单条消息: 去重 → filehelper → 白名单 → 转换 → 媒体下载 → 提交事件。"""
         if not isinstance(src, dict):
@@ -315,14 +360,37 @@ class WppAccount:
             )
             return
 
-        msg = to_astrbot_message(src, self._self_wxid, self._self_nickname)
+        # 入站昵称/群资料预取 (v0.7.0):
+        #   - 群消息: 群名/群主/成员昵称表, 让 AI 看到"张三"而不是"wxid_xxx";
+        #     第一条消息触发, 结果 30 分钟缓存, 引用回复也能直接复用。
+        #   - 私聊: 入站缺 fromNick 时查通讯录昵称。
+        sender_nickname = ""
+        group_profile = None
+        if is_group:
+            group_profile = await self._prefetch_group_profile(chatroom_id)
+            if group_profile:
+                sender_nickname = str(
+                    (group_profile.get("members") or {}).get(from_wxid) or ""
+                )
+        else:
+            sender_nickname = await self._prefetch_sender_nickname(from_wxid, src)
+
+        msg = to_astrbot_message(
+            src,
+            self._self_wxid,
+            self._self_nickname,
+            sender_nickname=sender_nickname,
+            group_profile=group_profile,
+        )
         if msg is None:
             return
 
         # 未 @ 的群消息 (主动候选群 / all 观察模式) 只构造占位组件:
         #   - 语音仍即时下载, 否则会错过 PreProcessStage 的 STT;
         #   - 图片/文件/视频延迟到 on_waiting_llm_request 真正要调 LLM 时再下载。
-        observe_only = is_group and not decision.at_me
+        # lazy_media=false 时即使未 @ 也立即下载媒体 (配合内置 group_icl /
+        # group_message_history 等需要在事件创建时就拿到真实媒体的插件)。
+        observe_only = is_group and not decision.at_me and self.lazy_media
         if observe_only:
             temp_files = await enrich_media(self._api, msg, include={"voice"})
             self._observe_since_report += 1
@@ -456,6 +524,11 @@ class WppAccount:
                 self._flush_dedup()
 
                 now = time.monotonic()
+                # Heartflow 白名单周期性自愈: 配置被外部改写/Heartflow 重载后
+                # 最多 5 分钟内恢复一致 (启动/策略写入/热更新已有即时同步)。
+                if now - self._last_heartflow_sync >= 300:
+                    self._last_heartflow_sync = now
+                    self._sync_heartflow_whitelist("periodic")
                 if (
                     self._filtered_since_report
                     or self._drop_since_report
@@ -509,6 +582,8 @@ class WppAccount:
             "status": dict(self._account_status),
             "queue_size": self._queue.qsize() if self._queue else 0,
             "dedup_size": len(self._seen_msg_ids),
+            "send": dict(getattr(self._api, "send_stats", {}) or {}),
+            "lazy_media": self.lazy_media,
         }
 
 

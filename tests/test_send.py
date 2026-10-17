@@ -121,10 +121,56 @@ class TestOutboundChain(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn("<title>收到</title>", calls[0][2])
 
-    async def test_quote_reply_long_text_falls_back_to_text(self):
+    async def test_quote_reply_long_text_quotes_head_then_sends_tail(self):
+        """v0.7.0: 长回复不再放弃引用, 第一段进引用气泡, 剩余续发。"""
         calls = await run_chain([Reply(id="123"), Plain("长" * 600)])
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][0], "text")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], "app")
+        self.assertIn("<title>" + "长" * 500 + "</title>", calls[0][2])
+        self.assertEqual(calls[1], ("text", "wxid_to", "长" * 100, None))
+
+    async def test_long_group_quote_keeps_mention_in_bubble(self):
+        calls = await run_chain(
+            [
+                Reply(id="new123", sender_id="wxid_a"),
+                At(qq="wxid_a", name="张三"),
+                Plain("长" * 600),
+            ],
+            to_wxid="123@chatroom",
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], "app")
+        title = calls[0][2].split("<title>", 1)[1].split("</title>", 1)[0]
+        self.assertTrue(title.startswith("@张三 "))
+        self.assertLessEqual(len(title), 500)
+        self.assertEqual(calls[1][0], "text")
+        # head 预留 "@张三 " 的 4 个字符 → 496 + 104 = 600, 内容无损
+        self.assertEqual(calls[1][2], "长" * 104)
+        self.assertEqual(title[4:] + calls[1][2], "长" * 600)
+
+    async def test_quote_send_failure_falls_back_to_full_text(self):
+        class FailingApi(FakeApi):
+            async def send_app_xml(self, to_wxid, xml, app_type=5):
+                raise RuntimeError("vendor down")
+
+        api = FailingApi()
+        await sender.send_chain(
+            api, "123@chatroom", [Reply(id="1"), At(qq="wxid_a", name="张三"), Plain("收到")]
+        )
+        self.assertEqual(len(api.calls), 1)
+        self.assertEqual(api.calls[0], ("text", "123@chatroom", "收到", ["wxid_a"]))
+
+    def test_split_quote_text_prefers_sentence_boundary(self):
+        text = "第一句。" + "长" * 600
+        head, tail = sender.split_quote_text(text, 100)
+        self.assertTrue(head.startswith("第一句。"))
+        self.assertLessEqual(len(head), 100)
+        self.assertEqual(head + tail, text)
+
+    def test_split_quote_text_hard_cut_without_boundary(self):
+        head, tail = sender.split_quote_text("长" * 600, 500)
+        self.assertEqual(head, "长" * 500)
+        self.assertEqual(tail, "长" * 100)
 
     async def test_share_link(self):
         calls = await run_chain(
@@ -147,6 +193,21 @@ class TestOutboundChain(unittest.IsolatedAsyncioTestCase):
         xml = sender.build_quote_reply_xml("hi", "", "")
         self.assertNotIn("<refermsg>", xml)
         self.assertIn("<type>57</type>", xml)
+
+    async def test_quote_refermsg_enriched_fields(self):
+        xml = sender.build_quote_reply_xml(
+            "收到",
+            "123",
+            "wxid_a",
+            display_name="张三",
+            chat_user="9@chatroom",
+            original_content="你好 <&>",
+            create_time=1700000000,
+        )
+        self.assertIn("<chatusr>9@chatroom</chatusr>", xml)
+        self.assertIn("<displayname>张三</displayname>", xml)
+        self.assertIn("<content>你好 &lt;&amp;&gt;</content>", xml)
+        self.assertIn("<createtime>1700000000</createtime>", xml)
 
 
 class TestFillReplySender(unittest.TestCase):

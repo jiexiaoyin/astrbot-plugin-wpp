@@ -98,13 +98,13 @@ class TestSyncConfig(unittest.IsolatedAsyncioTestCase):
     async def test_sync_writes_merged_list_and_keeps_bom(self):
         sync_mod.configure(None)
         result = sync_mod.sync_heartflow_whitelist(
-            "wpp", ["57737516566@chatroom"], "test"
+            "wpp", ["test-group@chatroom"], "test"
         )
         self.assertTrue(result["changed"])
         data = self._read()
         self.assertEqual(
             data["chat_whitelist"],
-            ["qq:GroupMessage:123", "wpp:GroupMessage:57737516566@chatroom"],
+            ["qq:GroupMessage:123", "wpp:GroupMessage:test-group@chatroom"],
         )
         self.assertTrue(data["enable_heartflow"])
         self.assertTrue(self.path.read_bytes().startswith(b"\xef\xbb\xbf"))

@@ -144,11 +144,42 @@ async def send_chain(
     to_wxid: str,
     chain: list[Any],
     account_id: str = "",
-) -> None:
-    """按消息链顺序发送。单个组件失败只记日志, 不中断后续组件。"""
+) -> dict[str, Any]:
+    """按消息链顺序发送。单个组件失败只记日志, 不中断后续组件。
+
+    同一会话的整条链会持有会话级锁 (WppClient.send_lock), 防止两条回复的
+    分片交错; 真正的 HTTP 发送间隔由 WppClient._post 的节流器保证。
+    返回 {"sent": 成功次数, "failed": 失败次数, "errors": [...]}。
+    """
+    lock_factory = getattr(api, "send_lock", None)
+    lock = lock_factory(to_wxid) if callable(lock_factory) else None
+    if lock is None:
+        return await _send_chain_locked(api, to_wxid, chain, account_id)
+    async with lock:
+        return await _send_chain_locked(api, to_wxid, chain, account_id)
+
+
+async def _send_chain_locked(
+    api: WppClient,
+    to_wxid: str,
+    chain: list[Any],
+    account_id: str,
+) -> dict[str, Any]:
+    stats: dict[str, Any] = {"sent": 0, "failed": 0, "errors": []}
     text_buf: list[str] = []
     ats: list[At] = []
     pending_reply: Reply | None = None
+
+    async def call_text(text: str, at_ids: list[str] | None = None) -> bool:
+        try:
+            await api.send_text(to_wxid, text, ats=at_ids)
+        except Exception as e:  # noqa: BLE001
+            stats["failed"] += 1
+            stats["errors"].append(f"send_text: {e}")
+            logger.warning(f"[WPP:{account_id}] send_text failed: {e}")
+            return False
+        stats["sent"] += 1
+        return True
 
     async def flush_text() -> None:
         nonlocal ats, pending_reply
@@ -159,38 +190,56 @@ async def send_chain(
         text = "\n".join(t for t in text_buf if t)
         text_buf.clear()
 
-        # 引用回复: Reply 后紧跟的短文本合并成 type=57 appmsg 一次发送
-        if pending_reply is not None and text and len(text) <= QUOTE_TEXT_LIMIT:
+        # 引用回复: Reply 后紧跟的文本优先走 type=57 appmsg。
+        # 超过 500 字符时: 引用气泡放第一段 (@昵称 + head), 剩余内容
+        # 作为普通文本续发, 保证既不丢引用/@, 也不截断长回复。
+        if pending_reply is not None and text:
+            mention_name = await _resolve_quote_mention_name(
+                api, to_wxid, ats, pending_reply
+            )
+            prefix = _mention_prefix(to_wxid, ats, mention_name)
+            budget = QUOTE_TEXT_LIMIT - len(prefix) - 1 if prefix else QUOTE_TEXT_LIMIT
+            head, tail = split_quote_text(text, max(1, budget))
+            # 群聊引用气泡没有 At 字段: 正文前加 "@昵称 " 提醒被引用成员。
+            quote_text = _quote_text_with_mention(
+                to_wxid, head, ats, mention_name=mention_name
+            )
+            xml = build_quote_reply_xml(
+                quote_text,
+                getattr(pending_reply, "id", ""),
+                getattr(pending_reply, "sender_id", ""),
+                display_name=mention_name
+                or str(getattr(pending_reply, "sender_nickname", "") or ""),
+                chat_user=to_wxid,
+                original_content=str(
+                    getattr(pending_reply, "message_str", "")
+                    or getattr(pending_reply, "text", "")
+                    or ""
+                ),
+                create_time=getattr(pending_reply, "time", 0) or 0,
+            )
             try:
-                # 群聊引用回复没有 At 字段, 与 wpp-openclaw 一致: 正文前加
-                # "@昵称 " 让被引用成员收到提醒 (核心 reply_with_mention
-                # 会先往链里插 At, 这里把它合并进引用气泡)。At.name 可能
-                # 只是入站兜底的 wxid, 需再查一次群成员昵称。
-                mention_name = await _resolve_quote_mention_name(
-                    api, to_wxid, ats, pending_reply
-                )
-                quote_text = _quote_text_with_mention(
-                    to_wxid, text, ats, mention_name=mention_name
-                )
-                xml = build_quote_reply_xml(
-                    quote_text,
-                    getattr(pending_reply, "id", ""),
-                    getattr(pending_reply, "sender_id", ""),
-                )
                 await api.send_app_xml(to_wxid, xml)
             except Exception as e:  # noqa: BLE001
-                logger.warning(f"[WPP:{account_id}] send_quote failed: {e}")
-            pending_reply = None
-            ats = []
-            return
+                # 引用发送失败时不要吞掉正文: 退回普通文本路径重发完整内容。
+                stats["failed"] += 1
+                stats["errors"].append(f"send_quote: {e}")
+                logger.warning(
+                    f"[WPP:{account_id}] send_quote failed, 回退普通文本: {e}"
+                )
+            else:
+                stats["sent"] += 1
+                pending_reply = None
+                ats = []
+                if tail:
+                    for chunk in chunk_text(tail):
+                        await call_text(chunk)
+                return
 
         at_ids = [str(getattr(a, "qq", "")) for a in ats if str(getattr(a, "qq", ""))]
         first = True
         for chunk in chunk_text(text):
-            try:
-                await api.send_text(to_wxid, chunk, ats=at_ids if first else None)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[WPP:{account_id}] send_text failed: {e}")
+            await call_text(chunk, at_ids if first else None)
             first = False
         ats = []
         pending_reply = None
@@ -208,26 +257,70 @@ async def send_chain(
             pending_reply = comp
         elif isinstance(comp, Share):
             await flush_text()
-            await _send_share(api, to_wxid, comp, account_id)
+            stats = _merge_send_stats(
+                stats, await _send_share(api, to_wxid, comp, account_id)
+            )
         elif isinstance(comp, Location):
             await flush_text()
-            await _send_location(api, to_wxid, comp, account_id)
+            stats = _merge_send_stats(
+                stats, await _send_location(api, to_wxid, comp, account_id)
+            )
         elif isinstance(comp, Image):
             await flush_text()
-            await _send_image(api, to_wxid, comp, account_id)
+            stats = _merge_send_stats(
+                stats, await _send_image(api, to_wxid, comp, account_id)
+            )
         elif isinstance(comp, File):
             await flush_text()
-            await _send_file(api, to_wxid, comp, account_id)
+            stats = _merge_send_stats(
+                stats, await _send_file(api, to_wxid, comp, account_id)
+            )
         elif isinstance(comp, Record):
             await flush_text()
-            await _send_record(api, to_wxid, comp, account_id)
+            stats = _merge_send_stats(
+                stats, await _send_record(api, to_wxid, comp, account_id)
+            )
         elif isinstance(comp, Video):
             await flush_text()
-            await _send_video(api, to_wxid, comp, account_id)
+            stats = _merge_send_stats(
+                stats, await _send_video(api, to_wxid, comp, account_id)
+            )
         else:
             logger.debug(f"[WPP:{account_id}] 未支持的出站组件: {type(comp).__name__}")
 
     await flush_text()
+    return stats
+
+
+def _merge_send_stats(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    base["sent"] += int(extra.get("sent", 0))
+    base["failed"] += int(extra.get("failed", 0))
+    base["errors"].extend(extra.get("errors", []))
+    return base
+
+
+def split_quote_text(text: str, limit: int = QUOTE_TEXT_LIMIT) -> tuple[str, str]:
+    """把长回复切成 (引用气泡 head, 续发 tail)。
+
+    head 必须是 text 的前缀, tail 是无损剩余部分。优先在段落/换行/句末切,
+    避免把一句话从中间截断; 找不到合适边界时按码点硬切。
+    """
+    if not text:
+        return "", ""
+    if len(text) <= limit:
+        return text, ""
+    window = text[:limit]
+    cut = limit
+    for sep in ("\n\n", "\n", "。", "！", "？", "；", "，", " "):
+        idx = window.rfind(sep)
+        if idx >= max(10, limit // 3):
+            cut = idx + len(sep)
+            break
+    head = text[:cut].strip()
+    if not head:
+        head = text[:limit]
+        cut = limit
+    return head, text[cut:].strip()
 
 
 # 昵称查询不能拖慢回复: 超时后直接退回 wxid
@@ -271,6 +364,22 @@ async def _resolve_quote_mention_name(
     return qq
 
 
+def _mention_prefix(to_wxid: str, ats: list[At], mention_name: str = "") -> str:
+    """群聊引用气泡需要的前缀 "@昵称"; 私聊/@全体返回空串。"""
+    if not to_wxid.endswith("@chatroom") or not ats:
+        return ""
+    at = ats[0]
+    qq = str(getattr(at, "qq", "") or "").strip()
+    if not qq or qq == "all":
+        return ""
+    name = str(mention_name or "").strip() or str(getattr(at, "name", "") or "").strip()
+    if not name:
+        name = qq
+    if not name or name == "all":
+        return ""
+    return f"@{name}"
+
+
 def _quote_text_with_mention(
     to_wxid: str, text: str, ats: list[At], mention_name: str = ""
 ) -> str:
@@ -280,18 +389,9 @@ def _quote_text_with_mention(
     因此与 wpp-openclaw 的 buildGroupMentionPrefix 一致, 用正文前缀提醒。
     私聊 / @全体 时不加前缀。
     """
-    if not to_wxid.endswith("@chatroom") or not ats:
+    prefix = _mention_prefix(to_wxid, ats, mention_name)
+    if not prefix:
         return text
-    at = ats[0]
-    qq = str(getattr(at, "qq", "") or "").strip()
-    if qq == "all":
-        return text
-    name = str(mention_name or "").strip() or str(getattr(at, "name", "") or "").strip()
-    if not name:
-        name = qq
-    if not name or name == "all":
-        return text
-    prefix = f"@{name}"
     if text.startswith(prefix):
         return text
     return f"{prefix} {text}".strip()
@@ -312,11 +412,18 @@ def build_quote_reply_xml(
     content: str,
     reply_id: str | int | None,
     sender_id: str | int | None = "",
+    *,
+    display_name: str = "",
+    chat_user: str = "",
+    original_content: str = "",
+    create_time: int | float | str = 0,
 ) -> str:
     """构造引用回复 appmsg (type=57)。
 
-    与 wpp-openclaw buildQuoteReplyXml 一致: 客户端主气泡读 `<title>`,
-    refermsg 极简化仅需 svrid (fromusr 可选, 兼容老客户端回查昵称)。
+    客户端主气泡读 `<title>`; refermsg 的 svrid 是必须的, fromusr 兼容老客户端
+    回查昵称。v0.7.0 在可用时补充 chatusr/displayname/content/createtime
+    (与 wpp-openclaw 完整 refermsg 结构一致), 缺失字段自动省略, 不影响
+    最小 svrid 引用。
     """
     text = _escape_xml((content or "引用回复").strip()[:QUOTE_TEXT_LIMIT])
     svrid = str(reply_id or "").strip()
@@ -328,6 +435,21 @@ def build_quote_reply_xml(
         refer = f"<refermsg><svrid>{_escape_xml(svrid)}</svrid>"
         if fromusr:
             refer += f"<fromusr>{_escape_xml(fromusr)}</fromusr>"
+        chatusr = str(chat_user or "").strip()
+        if chatusr:
+            refer += f"<chatusr>{_escape_xml(chatusr)}</chatusr>"
+        name = str(display_name or "").strip()
+        if name:
+            refer += f"<displayname>{_escape_xml(name)}</displayname>"
+        original = str(original_content or "").strip()
+        if original:
+            refer += f"<content>{_escape_xml(original[:1000])}</content>"
+        try:
+            ts = int(float(create_time or 0))
+        except (TypeError, ValueError):
+            ts = 0
+        if ts > 0:
+            refer += f"<createtime>{ts}</createtime>"
         refer += "</refermsg>"
     return f"<appmsg><title>{text}</title><des>{text}</des><type>57</type>{refer}</appmsg>"
 
@@ -347,7 +469,13 @@ def build_share_link_xml(
     )
 
 
-async def _send_share(api: WppClient, to_wxid: str, comp: Share, account_id: str) -> None:
+def _one_result(ok: bool, error: str = "") -> dict[str, Any]:
+    return {"sent": 1 if ok else 0, "failed": 0 if ok else 1, "errors": [error] if error else []}
+
+
+async def _send_share(
+    api: WppClient, to_wxid: str, comp: Share, account_id: str
+) -> dict[str, Any]:
     try:
         xml = build_share_link_xml(
             getattr(comp, "title", "") or getattr(comp, "url", ""),
@@ -356,13 +484,15 @@ async def _send_share(api: WppClient, to_wxid: str, comp: Share, account_id: str
             getattr(comp, "image", "") or "",
         )
         await api.send_app_xml(to_wxid, xml)
+        return _one_result(True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[WPP:{account_id}] send_share failed: {e}")
+        return _one_result(False, f"send_share: {e}")
 
 
 async def _send_location(
     api: WppClient, to_wxid: str, comp: Location, account_id: str
-) -> None:
+) -> dict[str, Any]:
     try:
         await api.send_location(
             to_wxid,
@@ -371,16 +501,22 @@ async def _send_location(
             str(getattr(comp, "content", "") or getattr(comp, "title", "") or ""),
             str(getattr(comp, "title", "") or ""),
         )
+        return _one_result(True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[WPP:{account_id}] send_location failed: {e}")
+        return _one_result(False, f"send_location: {e}")
 
 
-async def _send_image(api: WppClient, to_wxid: str, comp: Image, account_id: str) -> None:
+async def _send_image(
+    api: WppClient, to_wxid: str, comp: Image, account_id: str
+) -> dict[str, Any]:
     try:
         path = await comp.convert_to_file_path()
         await api.send_image(to_wxid, path)
+        return _one_result(True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[WPP:{account_id}] send_image failed: {e}")
+        return _one_result(False, f"send_image: {e}")
 
 
 async def _read_bytes(path: str) -> bytes | None:
@@ -399,44 +535,56 @@ async def _read_bytes(path: str) -> bytes | None:
         return None
 
 
-async def _send_file(api: WppClient, to_wxid: str, comp: File, account_id: str) -> None:
+async def _send_file(
+    api: WppClient, to_wxid: str, comp: File, account_id: str
+) -> dict[str, Any]:
     try:
         path = await comp.get_file()
         if not path:
             logger.warning(f"[WPP:{account_id}] File 组件没有可用路径/URL, 跳过")
-            return
+            return _one_result(False, "send_file: no path")
         data = await _read_bytes(path)
         if data is None:
-            return
+            return _one_result(False, "send_file: unreadable")
         await api.send_file(to_wxid, os.path.basename(path), data)
+        return _one_result(True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[WPP:{account_id}] send_file failed: {e}")
+        return _one_result(False, f"send_file: {e}")
 
 
-async def _send_video(api: WppClient, to_wxid: str, comp: Video, account_id: str) -> None:
+async def _send_video(
+    api: WppClient, to_wxid: str, comp: Video, account_id: str
+) -> dict[str, Any]:
     try:
         path = await comp.convert_to_file_path()
         data = await _read_bytes(path)
         if data is None:
-            return
+            return _one_result(False, "send_video: unreadable")
         await api.send_video(to_wxid, data)
+        return _one_result(True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[WPP:{account_id}] send_video failed: {e}")
+        return _one_result(False, f"send_video: {e}")
 
 
-async def _send_record(api: WppClient, to_wxid: str, comp: Record, account_id: str) -> None:
+async def _send_record(
+    api: WppClient, to_wxid: str, comp: Record, account_id: str
+) -> dict[str, Any]:
     try:
         path = await comp.convert_to_file_path()
         data = await _read_bytes(path)
         if data is None:
-            return
+            return _one_result(False, "send_voice: unreadable")
         ext = os.path.splitext(path)[1].lower()
         type_map = {".amr": 0, ".speex": 1, ".mp3": 2, ".wav": 3, ".silk": 4}
         fmt = type_map.get(ext, 3)
         voice_time = _wav_duration_ms(path) if ext == ".wav" else 0
         await api.send_voice(to_wxid, data, fmt_type=fmt, voice_time_ms=voice_time)
+        return _one_result(True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[WPP:{account_id}] send_voice failed: {e}")
+        return _one_result(False, f"send_voice: {e}")
 
 
 def _wav_duration_ms(path: str) -> int:
@@ -457,4 +605,5 @@ __all__ = [
     "build_share_link_xml",
     "chunk_text",
     "send_chain",
+    "split_quote_text",
 ]

@@ -71,6 +71,13 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_accounts(platform_config: dict) -> list[dict]:
     """解析账号配置列表。
 
@@ -179,7 +186,32 @@ WPP_CONFIG_METADATA = {
     "wpp_sync_heartflow_whitelist": {
         "description": "群白名单自动同步到 Heartflow",
         "type": "bool",
-        "hint": "默认 true。把各账号的群白名单 + 主动候选群同步到 Heartflow 的 chat_whitelist (只替换本平台的 UMO 条目, 保留其他平台条目), 写盘并实时更新已加载实例。未安装 Heartflow 时自动跳过。",
+        "hint": "默认 true。把各账号的群白名单 + 主动候选群同步到 Heartflow 的 chat_whitelist (只替换本平台的 UMO 条目, 保留其他平台条目), 写盘并实时更新已加载实例。启动/策略变更/热更新即时同步, 并每 5 分钟自愈一次。未安装 Heartflow 时自动跳过。",
+    },
+    "wpp_lazy_media": {
+        "description": "未@群消息媒体懒加载",
+        "type": "bool",
+        "hint": "默认 true。主动候选群/观察模式下, 图片/文件/视频只在真正调用 LLM 前下载。若启用了内置 group_icl_enable / group_message_history_enable (需要在事件创建时拿到真实媒体), 请设为 false 改为即时下载。",
+    },
+    "wpp_send_interval_ms": {
+        "description": "同一会话发送最小间隔 (毫秒)",
+        "type": "int",
+        "hint": "默认 300。同一会话的多分片/多事件回复会串行并保持该间隔, 降低微信风控概率; 0=不节流。",
+    },
+    "wpp_outbound_repeat_guard": {
+        "description": "出站复读保护",
+        "type": "bool",
+        "hint": "默认 true。同一会话相同文本在窗口内超过次数上限后跳过, 防止 LLM 复读刷屏。",
+    },
+    "wpp_outbound_repeat_window": {
+        "description": "复读保护窗口 (秒)",
+        "type": "int",
+        "hint": "默认 300 (5 分钟)。",
+    },
+    "wpp_outbound_repeat_limit": {
+        "description": "复读保护次数上限",
+        "type": "int",
+        "hint": "默认 2。窗口内第 3 条相同文本开始跳过 (前两条正常发送, 避免误杀正常重复回答)。",
     },
     "wpp_ws_url": {
         "description": "WS 实时消息通道地址 (vendor /ws/sync)",
@@ -208,6 +240,11 @@ WPP_CONFIG_METADATA = {
         "wpp_group_reply": "atbot",
         "wpp_proactive_groups": "",
         "wpp_sync_heartflow_whitelist": True,
+        "wpp_lazy_media": True,
+        "wpp_send_interval_ms": 300,
+        "wpp_outbound_repeat_guard": True,
+        "wpp_outbound_repeat_window": 300,
+        "wpp_outbound_repeat_limit": 2,
         "wpp_ws_url": "",
         "wpp_webhook_enabled": False,
     },
@@ -240,6 +277,20 @@ class WppPlatformAdapter(Platform):
         self.heartflow_sync_enabled = _as_bool(
             platform_config.get("wpp_sync_heartflow_whitelist"), True
         )
+        self.lazy_media = _as_bool(platform_config.get("wpp_lazy_media"), True)
+        self.send_interval_ms = max(
+            0, _as_int(platform_config.get("wpp_send_interval_ms"), 300)
+        )
+        self.outbound_repeat_guard = _as_bool(
+            platform_config.get("wpp_outbound_repeat_guard"), True
+        )
+        self.outbound_repeat_window = max(
+            0, _as_int(platform_config.get("wpp_outbound_repeat_window"), 300)
+        )
+        self.outbound_repeat_limit = max(
+            1, _as_int(platform_config.get("wpp_outbound_repeat_limit"), 2)
+        )
+        self._heartflow_all_warned = False
 
         # 缓存平台元数据 (AstrBot 每条消息都会取, 不要每次重建)
         self.metadata = PlatformMetadata(
@@ -271,6 +322,14 @@ class WppPlatformAdapter(Platform):
                 block_users=acfg.get("block_users") or set(),
                 require_at_mention=acfg.get("require_at_mention", False),
                 proactive_groups=acfg.get("proactive_groups") or set(),
+                lazy_media=self.lazy_media,
+                send_interval_ms=self.send_interval_ms,
+                repeat_guard_window=(
+                    float(self.outbound_repeat_window)
+                    if self.outbound_repeat_guard
+                    else 0.0
+                ),
+                repeat_guard_limit=self.outbound_repeat_limit,
             )
             self.accounts.append(acct)
             logger.info(
@@ -363,6 +422,16 @@ class WppPlatformAdapter(Platform):
             return
         try:
             groups = collect_group_ids(self.accounts)
+            if (
+                not self._heartflow_all_warned
+                and any(getattr(a, "group_reply", "") == "all" for a in self.accounts)
+            ):
+                self._heartflow_all_warned = True
+                logger.warning(
+                    "[WPP] group_reply=all 会放行所有群, 但 Heartflow 白名单只能覆盖"
+                    "显式列出的 allow_users 群 / proactive_groups; 如需让心流接管"
+                    "某个群, 请把群 ID 加入 proactive_groups。"
+                )
             sync_heartflow_config(self.instance_id, groups, reason)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[WPP] 同步 Heartflow 白名单失败: {e}")

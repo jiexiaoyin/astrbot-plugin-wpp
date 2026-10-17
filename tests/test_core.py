@@ -59,6 +59,42 @@ class TestMessageEventGate(unittest.TestCase):
         self.assertEqual(msgs.extract_all_msg_src(payload)[0]["fromUser"], "wxid_x")
 
 
+class TestOtherMessageTypes(unittest.TestCase):
+    def test_emoji_becomes_placeholder_text(self):
+        src = {
+            "sender_id": "wxid_f",
+            "msg_id": "emoji1",
+            "msg_type": 47,
+            "content": "<msg><emoji md5=\"abc\" len=\"123\"/></msg>",
+        }
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
+        self.assertIsNotNone(abm)
+        self.assertTrue(abm.message_str)  # 至少是 [表情], 不让消息链为空
+
+    def test_friend_request_is_silent(self):
+        src = {"sender_id": "fmessage", "msg_id": "fr1", "content": "请求添加你为好友"}
+        self.assertEqual(msgs.skip_reason(src, "wxid_bot"), "friend_request")
+        self.assertIsNone(msgs.to_astrbot_message(src, "wxid_bot", "小助手"))
+
+    def test_group_invite_sysmsg_is_silent(self):
+        src = {
+            "sender_id": "wxid_inviter",
+            "chatroom_id": "123@chatroom",
+            "msg_id": "gi1",
+            "msg_type": 10000,
+            "content": '<sysmsg type="groupinvite">邀请你加入群聊</sysmsg>',
+        }
+        self.assertEqual(msgs.skip_reason(src, "wxid_bot"), "system_msg")
+
+    def test_reaction_sysmsg_is_silent(self):
+        src = {
+            "sender_id": "wxid_f",
+            "msg_id": "re1",
+            "content": '<sysmsg type="pat">拍了拍我</sysmsg>',
+        }
+        self.assertEqual(msgs.skip_reason(src, "wxid_bot"), "sysmsg")
+
+
 class TestToAstrBotMessage(unittest.TestCase):
     def test_private_text(self):
         src = {"sender_id": "wxid_friend", "content": "你好", "msg_id": "m1"}
@@ -67,6 +103,46 @@ class TestToAstrBotMessage(unittest.TestCase):
         self.assertEqual(abm.session_id, "wxid_friend")
         self.assertEqual(abm.message_str, "你好")
         self.assertEqual(abm.self_id, "wxid_bot")
+
+    def test_group_profile_fills_name_owner_and_members(self):
+        src = {
+            "sender_id": "wxid_friend",
+            "content": "大家好",
+            "chatroom_id": "123@chatroom",
+            "msg_id": "m-profile",
+        }
+        profile = {
+            "name": "调试群",
+            "owner": "wxid_owner",
+            "avatar": "https://example.com/g.png",
+            "members": {"wxid_friend": "张三", "wxid_owner": "群主"},
+            "member_count": 2,
+        }
+        abm = msgs.to_astrbot_message(
+            src, "wxid_bot", "小助手", group_profile=profile
+        )
+        self.assertIsNotNone(abm)
+        self.assertEqual(abm.group.group_name, "调试群")
+        self.assertEqual(abm.group.group_owner, "wxid_owner")
+        self.assertEqual(abm.group.group_avatar, "https://example.com/g.png")
+        self.assertEqual(abm.group.member_count, 2)
+        self.assertEqual(
+            {m.user_id: m.nickname for m in abm.group.members},
+            {"wxid_friend": "张三", "wxid_owner": "群主"},
+        )
+
+    def test_sender_nickname_fallback_from_prefetch(self):
+        src = {
+            "sender_id": "wxid_friend",
+            "content": "你好",
+            "chatroom_id": "123@chatroom",
+            "msg_id": "m-nick",
+        }
+        abm = msgs.to_astrbot_message(
+            src, "wxid_bot", "小助手", sender_nickname="张三"
+        )
+        self.assertIsNotNone(abm)
+        self.assertEqual(abm.sender.nickname, "张三")
 
     def test_group_text_at_bot(self):
         src = {

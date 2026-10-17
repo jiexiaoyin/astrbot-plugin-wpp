@@ -74,6 +74,8 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 - 群聊引用气泡没有 `At` 字段，自动在正文前加 `@昵称 `；
   入站缺昵称时按 `At.name` → `Reply.sender_nickname` → 群成员列表 →
   通讯录依次解析，仍查不到则退回 `@wxid`（缓存 30 分钟，超时 5 秒）；
+- **长回复**：引用气泡放第一段（含 `@昵称`），剩余内容自动续发普通文本，
+  不再因为超过 500 字而丢失引用/@；引用发送失败会回退为普通文本；
 - 普通文本回复使用 vendor `At` 字段。
 
 ### 🛡 完善的接入能力
@@ -98,8 +100,30 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 ### 🖥 运维体验
 - **账号信息页面**：Dashboard 里查昵称/wxid/在线状态
+- **策略管理页面**：Dashboard → WPP → 策略管理，查看/修改每个账号的白名单、
+  群策略、主动候选群，并一键同步 Heartflow
 - **在线状态卡片**：平台状态实时显示（多账号聚合）
 - **动态面板地址**：UI 显示实际配置的 vendor 地址（不硬编码）
+- **发送统计**：`WppAccount.stats["send"]` 暴露成功/失败/连续失败/最后错误；
+  连续失败 3 次写 WARNING 日志
+
+### 🛡 出站稳定性
+- **会话级串行**：同一会话的整条消息链持有锁，两条回复的分片不会交错；
+- **最小发送间隔**：`wpp_send_interval_ms`（默认 300ms）控制同一会话的
+  vendor 发送节奏，降低微信风控概率；
+- **复读保护**：同一会话相同文本在窗口内第 3 次起跳过，防止 LLM 复读刷屏；
+- **入站资料预取**：群名/群主/成员昵称缓存 30 分钟，AI 提示词拿真实昵称，
+  引用回复 @ 也复用同一份缓存。
+
+### 👮 管理员命令
+需要 AstrBot 管理员权限（`PermissionType.ADMIN`）：
+
+- `/wpp_policy` — 查看全部账号策略
+- `/wpp_policy <账号> <字段> add|del|set <值...>` — 修改列表字段
+  （`allow_users` / `block_users` / `blacklist_groups` / `proactive_groups`）
+- `/wpp_policy <账号> group_reply set atbot|none|all`
+- `/wpp_policy <账号> require_at_mention set true|false`
+- `/wpp_sync [实例id]` — 立即同步 Heartflow 白名单
 
 ---
 
@@ -186,7 +210,12 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 | `wpp_block_users` | — | **单账号模式**私聊黑名单 wxid（逗号分隔），全部放行时排除指定人；群聊里也屏蔽该成员 |
 | `wpp_group_reply` | — | **单账号模式**群消息准入策略: `atbot` / `none` / `all`（`all`=放行所有群消息，观察模式，不强制回复）|
 | `wpp_proactive_groups` | — | **单账号模式**主动回复候选群（逗号分隔群 ID）；未 @ 消息也放行，是否回复由决策插件决定 |
-| `wpp_sync_heartflow_whitelist` | — | 群白名单自动同步到 Heartflow `chat_whitelist`（默认 `true`，未装 Heartflow 自动跳过）|
+| `wpp_sync_heartflow_whitelist` | — | 群白名单自动同步到 Heartflow `chat_whitelist`（默认 `true`，未装 Heartflow 自动跳过；每 5 分钟自愈）|
+| `wpp_lazy_media` | — | 未 @ 群消息媒体懒加载（默认 `true`）；启用内置 `group_icl_enable` / `group_message_history_enable` 时建议设为 `false` |
+| `wpp_send_interval_ms` | — | 同一会话两次发送的最小间隔，默认 `300` 毫秒；`0`=不节流 |
+| `wpp_outbound_repeat_guard` | — | 出站复读保护（默认 `true`）：窗口内相同文本超过上限后跳过 |
+| `wpp_outbound_repeat_window` | — | 复读保护窗口，默认 `300` 秒 |
+| `wpp_outbound_repeat_limit` | — | 复读保护上限，默认 `2`（第 3 条相同文本起跳过）|
 | `wpp_ws_url` | — | WS 实时通道地址（如 `wss://<vendor-domain>/ws/sync`），主通道 |
 | `wpp_webhook_enabled` | — | 是否启用 webhook 兜底（默认 `false`，仅 WS）|
 
@@ -260,6 +289,7 @@ Heartflow 的 `chat_whitelist`：
 
 - 只替换本平台的 `wpp:GroupMessage:` 条目，其他平台/手写条目保留；
 - `/group`、`/proactive` 增删、外部修改 `wpp_whitelist.json` 热更新、适配器启动时都会同步；
+- 另外每 5 分钟幂等自愈一次，Heartflow 重载/配置被外部改写后能自动恢复；
 - 写盘后同时更新已加载的 Heartflow 实例，**无需重启**；
 - 可用 `wpp_sync_heartflow_whitelist=false` 关闭；未安装 Heartflow 时自动跳过。
 
@@ -272,7 +302,9 @@ Heartflow 的 `chat_whitelist`：
 - 未触发回复的消息不会产生任何媒体下载。
 
 注意：懒加载发生在内置群聊上下文 handler 之后，因此当前图片不会进入
-`group_icl` 历史/图注，但会正常进入本次 LLM 请求。
+`group_icl` 历史/图注，但会正常进入本次 LLM 请求。如果启用了
+`group_icl_enable` / `group_message_history_enable` 且需要图片进入历史，
+请设置 `wpp_lazy_media=false` 改为事件创建时即时下载。
 
 #### 灰度建议
 

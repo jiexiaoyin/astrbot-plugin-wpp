@@ -27,6 +27,27 @@ NICKNAME_CACHE_TTL_SECONDS = 1800.0
 # 查询失败/查无结果的负缓存: 避免 vendor 故障时每条引用回复都等 5s 超时。
 NICKNAME_FAILURE_TTL_SECONDS = 60.0
 
+# 入站群资料 (群名/群主/成员昵称) 缓存。第一条群消息触发一次预取,
+# 后续同群消息直接复用, 让 AI 提示词拿到真实昵称而不是 wxid。
+GROUP_CACHE_TTL_SECONDS = 1800.0
+GROUP_FAILURE_TTL_SECONDS = 60.0
+# 群资料预取不能拖死消息 worker
+GROUP_INFO_TIMEOUT_SECONDS = 8.0
+
+# 出站消息节流 (同一会话两次 vendor 发送的最小间隔)
+DEFAULT_SEND_INTERVAL_SECONDS = 0.3
+
+# 这些端点会真正发消息; 统一在 _post 层做同会话串行 + 节流。
+_SEND_ENDPOINTS = frozenset({
+    "/Msg/SendTxt",
+    "/Msg/ShareLink",
+    "/Msg/ShareLocation",
+    "/Msg/UploadImg",
+    "/Msg/SendFile",
+    "/Msg/SendVideo",
+    "/Msg/SendVoice",
+})
+
 
 class WppApiError(Exception):
     def __init__(self, code: Any, message: str):
@@ -47,13 +68,45 @@ class WppClient:
     同时注入 header + query 双保险 (vendor 两种都认)。
     """
 
-    def __init__(self, base_url: str, auth_token: str, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        auth_token: str,
+        timeout: int = 30,
+        send_interval: float = DEFAULT_SEND_INTERVAL_SECONDS,
+        repeat_guard_window: float = 0.0,
+        repeat_guard_limit: int = 2,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
         self.timeout = timeout
         self._session: aiohttp.ClientSession | None = None
         # key=(chatroom_id, wxid) -> (nickname, monotonic_ts)
         self._nickname_cache: dict[tuple[str, str], tuple[str, float]] = {}
+        # key=chatroom_id -> (profile, ts, ok)
+        self._group_cache: dict[str, tuple[dict, float, bool]] = {}
+
+        # 出站串行/节流 (v0.7.0):
+        #   _chain_locks: 整条消息链独占同一会话, 防止两条回复的分片交错
+        #   _send_locks: 单个 vendor 发送请求串行, 保证最小发送间隔
+        self.send_interval = max(0.0, float(send_interval or 0.0))
+        self._chain_locks: dict[str, asyncio.Lock] = {}
+        self._send_locks: dict[str, asyncio.Lock] = {}
+        self._last_send_at: dict[str, float] = {}
+
+        # 出站重复保护: 同一会话相同文本在窗口内超过 limit 次后跳过,
+        # 防止 LLM 复读造成刷屏 (窗口 0 = 关闭)。
+        self.repeat_guard_window = max(0.0, float(repeat_guard_window or 0.0))
+        self.repeat_guard_limit = max(1, int(repeat_guard_limit or 2))
+        self._outbound_history: dict[tuple[str, str], list[float]] = {}
+
+        # 发送结果统计 (WebUI/Dashboard 可见)
+        self.send_stats: dict[str, Any] = {
+            "sent": 0,
+            "failed": 0,
+            "consecutive_failures": 0,
+            "last_error": "",
+        }
 
     async def _session_acquire(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -80,26 +133,120 @@ class WppClient:
             h["X-Access-Token"] = self.auth_token
         return h
 
+    def send_lock(self, to_wxid: str) -> asyncio.Lock:
+        """整条消息链的会话级锁: 同一会话的回复按整链串行, 分片不交错。"""
+        key = str(to_wxid or "")
+        lock = self._chain_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._chain_locks[key] = lock
+        return lock
+
+    async def _pace_send(self, to_wxid: str) -> None:
+        """保证同一会话两次 vendor 发送至少间隔 send_interval 秒。"""
+        if self.send_interval <= 0:
+            return
+        key = str(to_wxid or "")
+        now = time.monotonic()
+        last = self._last_send_at.get(key)
+        if last is not None:
+            delay = self.send_interval - (now - last)
+            if delay > 0:
+                await asyncio.sleep(delay)
+                now = time.monotonic()
+        self._last_send_at[key] = now
+
+    def record_send_result(self, ok: bool, error: str = "") -> None:
+        """记录 vendor 发送结果; 连续失败 3 次告警一次。"""
+        stats = self.send_stats
+        if ok:
+            stats["sent"] = int(stats.get("sent", 0)) + 1
+            stats["consecutive_failures"] = 0
+            return
+        stats["failed"] = int(stats.get("failed", 0)) + 1
+        failures = int(stats.get("consecutive_failures", 0)) + 1
+        stats["consecutive_failures"] = failures
+        stats["last_error"] = str(error or "")[:300]
+        if failures == 3:
+            logger.warning(
+                f"[WPP] 连续 {failures} 次发送失败, 请检查 vendor/账号状态: "
+                f"{str(error or '')[:200]}"
+            )
+
+    def should_skip_repeat(self, to_wxid: str, content: str) -> bool:
+        """出站复读保护: 窗口内同一会话同一文本超过 limit 次则跳过。"""
+        window = self.repeat_guard_window
+        if window <= 0 or not content:
+            return False
+        key = (str(to_wxid or ""), str(content))
+        now = time.monotonic()
+        history = [t for t in self._outbound_history.get(key, []) if now - t < window]
+        skip = len(history) >= self.repeat_guard_limit
+        history.append(now)
+        self._outbound_history[key] = history
+        # 防止历史表无限增长
+        if len(self._outbound_history) > 2000:
+            for k in list(self._outbound_history)[:1000]:
+                self._outbound_history.pop(k, None)
+        if skip:
+            logger.info(
+                f"[WPP] 出站复读保护: 跳过 {window:.0f}s 内第 {len(history)} 次相同消息 "
+                f"to={to_wxid} len={len(content)}"
+            )
+        return skip
+
     async def _post(
         self,
         endpoint: str,
         body: dict,
         max_retries: int = 2,
         retry_safe: bool = True,
+        timeout: float | None = None,
     ) -> dict:
         """POST vendor API, 带 retry。
 
         retry_safe=False 用于发消息等**非幂等**接口: 网络超时后重试可能造成重复发送,
         因此只尝试一次。查询/下载类接口保持退避重试。
+
+        发送类端点额外做同会话串行 + 最小发送间隔 (send_interval),
+        降低多分片/多事件并发时被微信风控的概率。
         """
+        if endpoint in _SEND_ENDPOINTS:
+            key = str(body.get("ToWxid") or "")
+            lock = self._send_locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._send_locks[key] = lock
+            async with lock:
+                await self._pace_send(key)
+                try:
+                    result = await self._post_impl(
+                        endpoint, body, max_retries, retry_safe, timeout
+                    )
+                except Exception as e:  # noqa: BLE001 - 记录后原样抛出
+                    self.record_send_result(False, str(e))
+                    raise
+                self.record_send_result(True)
+                return result
+        return await self._post_impl(endpoint, body, max_retries, retry_safe, timeout)
+
+    async def _post_impl(
+        self,
+        endpoint: str,
+        body: dict,
+        max_retries: int = 2,
+        retry_safe: bool = True,
+        timeout: float | None = None,
+    ) -> dict:
         session = await self._session_acquire()
         url = self._url(endpoint)
         if not retry_safe:
             max_retries = 0
+        total_timeout = float(timeout or self.timeout)
         last_err: Exception | None = None
         for attempt in range(1, max_retries + 2):
             try:
-                async with session.post(url, json=body, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                async with session.post(url, json=body, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=total_timeout)) as resp:
                     text = await resp.text()
                     if resp.status != 200:
                         raise WppApiError(f"http_{resp.status}", f"{endpoint} -> HTTP {resp.status}: {text[:200]}")
@@ -179,6 +326,7 @@ class WppClient:
 
         群消息优先查群成员列表 (非好友也能查到), 再退回通讯录详情。
         结果按 (群, wxid) 缓存 30 分钟, 避免每条引用回复都打 vendor。
+        入站预取的群资料会把成员昵称写进同一缓存, 引用回复通常零额外请求。
         """
         wxid = str(wxid or "").strip()
         if not wxid or wxid == "all":
@@ -193,23 +341,22 @@ class WppClient:
 
         nick = ""
         if chatroom_id.endswith("@chatroom"):
-            nick = await self._group_member_nickname(chatroom_id, wxid)
+            profile = self._cached_group_profile(chatroom_id)
+            if profile is not None:
+                nick = str((profile.get("members") or {}).get(wxid) or "")
+            else:
+                nick = await self._group_member_nickname(chatroom_id, wxid)
         if not nick:
             nick = await self._contact_nickname(wxid)
         self._nickname_cache[key] = (nick, time.monotonic())
         return nick
 
-    async def _group_member_nickname(self, chatroom_id: str, wxid: str) -> str:
-        try:
-            resp = await self._post(
-                "/Group/GetChatRoomMemberDetail", {"QID": chatroom_id}, max_retries=0
-            )
-        except Exception as e:  # noqa: BLE001 - 昵称查询失败不阻塞发送
-            logger.debug(f"[WPP] 群成员昵称查询失败 {chatroom_id}: {e}")
-            return ""
+    @staticmethod
+    def _parse_group_members(resp: dict) -> dict[str, str]:
+        """从 /Group/GetChatRoomMemberDetail 响应提取 {wxid: nickname}。"""
         data = resp.get("Data") or {}
         if not isinstance(data, dict):
-            return ""
+            return {}
         room = data.get("NewChatroomData") or {}
         members: Any = room.get("ChatRoomMember") if isinstance(room, dict) else None
         if not members:
@@ -220,14 +367,115 @@ class WppClient:
                 or []
             )
         if not isinstance(members, list):
-            return ""
+            return {}
+        out: dict[str, str] = {}
         for member in members:
             if not isinstance(member, dict):
                 continue
-            uid = str(member.get("UserName") or member.get("userName") or "")
-            if uid == wxid:
-                return self._member_nickname(member)
-        return ""
+            uid = str(member.get("UserName") or member.get("userName") or "").strip()
+            if uid:
+                out[uid] = WppClient._member_nickname(member)
+        return out
+
+    def _cached_group_profile(self, chatroom_id: str) -> dict | None:
+        cached = self._group_cache.get(str(chatroom_id or ""))
+        if not cached:
+            return None
+        profile, ts, ok = cached
+        ttl = GROUP_CACHE_TTL_SECONDS if ok else GROUP_FAILURE_TTL_SECONDS
+        if time.monotonic() - ts < ttl:
+            return profile
+        return None
+
+    async def get_group_profile(self, chatroom_id: str) -> dict:
+        """预取群资料: 群名/群主/头像/成员昵称表。
+
+        第一条群消息触发; 结果缓存 30 分钟 (失败负缓存 60s)。返回:
+          {"name": str, "owner": str, "avatar": str, "members": {wxid: nick},
+           "member_count": int}
+        vendor 查询失败时返回已拿到的部分, 不抛异常。
+        """
+        chatroom_id = str(chatroom_id or "").strip()
+        if not chatroom_id.endswith("@chatroom"):
+            return {}
+        cached = self._cached_group_profile(chatroom_id)
+        if cached is not None:
+            return cached
+
+        profile: dict[str, Any] = {
+            "name": "",
+            "owner": "",
+            "avatar": "",
+            "members": {},
+            "member_count": 0,
+        }
+        info_ok = False
+        members_ok = False
+        try:
+            info = await self._post(
+                "/Group/GetChatRoomInfoDetail",
+                {"QID": chatroom_id},
+                max_retries=0,
+                timeout=GROUP_INFO_TIMEOUT_SECONDS,
+            )
+            data = info.get("Data") or {}
+            if isinstance(data, dict):
+                for key in ("NickName", "DisplayName", "Remark"):
+                    name = self._nick_value(data.get(key))
+                    if name:
+                        profile["name"] = name
+                        break
+                profile["owner"] = self._nick_value(data.get("ChatRoomOwner"))
+                profile["avatar"] = self._nick_value(
+                    data.get("SmallHeadImgUrl") or data.get("AvatarUrl")
+                )
+                try:
+                    profile["member_count"] = int(data.get("MemberCount") or 0)
+                except (TypeError, ValueError):
+                    profile["member_count"] = 0
+                info_ok = True
+        except Exception as e:  # noqa: BLE001 - 群资料失败不阻塞消息
+            logger.debug(f"[WPP] 群资料查询失败 {chatroom_id}: {e}")
+
+        try:
+            members_resp = await self._post(
+                "/Group/GetChatRoomMemberDetail",
+                {"QID": chatroom_id},
+                max_retries=0,
+                timeout=GROUP_INFO_TIMEOUT_SECONDS,
+            )
+            members = self._parse_group_members(members_resp)
+            members_ok = True
+            if members:
+                profile["members"] = members
+                profile["member_count"] = profile["member_count"] or len(members)
+                now = time.monotonic()
+                for uid, nick in members.items():
+                    if nick:
+                        self._nickname_cache[(chatroom_id, uid)] = (nick, now)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[WPP] 群成员查询失败 {chatroom_id}: {e}")
+
+        # 只有两个查询都成功才享受 30 分钟长缓存; 任一失败走 60s 负缓存,
+        # 避免成员列表缺失时整整半小时都拿不到昵称。
+        ok = info_ok and members_ok
+        self._group_cache[chatroom_id] = (profile, time.monotonic(), ok)
+        if ok:
+            logger.debug(
+                f"[WPP] 群资料已预取: {chatroom_id} name={profile['name']!r} "
+                f"members={len(profile['members'])}"
+            )
+        return profile
+
+    async def _group_member_nickname(self, chatroom_id: str, wxid: str) -> str:
+        try:
+            resp = await self._post(
+                "/Group/GetChatRoomMemberDetail", {"QID": chatroom_id}, max_retries=0
+            )
+        except Exception as e:  # noqa: BLE001 - 昵称查询失败不阻塞发送
+            logger.debug(f"[WPP] 群成员昵称查询失败 {chatroom_id}: {e}")
+            return ""
+        return self._parse_group_members(resp).get(wxid, "")
 
     async def _contact_nickname(self, wxid: str) -> str:
         try:
@@ -486,6 +734,8 @@ class WppClient:
     # ------------------------------------------------------------------ 发送
     async def send_text(self, to_wxid: str, content: str, ats: list[str] | None = None) -> dict:
         """POST /api/Msg/SendTxt — 发文本。群@ 用 ats (wxid 列表, 逗号串)。"""
+        if self.should_skip_repeat(to_wxid, content):
+            return {"Code": 0, "Skipped": True, "Reason": "outbound_repeat_guard"}
         body: dict = {"ToWxid": to_wxid, "Content": content, "Type": 1}
         if ats:
             body["At"] = ",".join(ats)

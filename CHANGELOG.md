@@ -1,5 +1,61 @@
 # Changelog
 
+## v0.7.0 (2026-10-17) — 长回复引用 / 入站资料 / 出站稳定性
+
+### 修复
+- **长回复丢失引用和 @**：v0.6.x 只在回复 ≤500 字时走引用气泡，长回复直接退化成
+  普通文本，引用和 @ 全部丢失。现在引用气泡发送第一段（含 `@昵称` 前缀），
+  剩余内容作为普通文本续发，**不截断、不丢引用/@**；引用发送失败时自动回退
+  普通文本，不再吞掉整条回复。
+- **引用气泡 @ 前缀挤出正文**：按昵称长度预留前缀空间，保证
+  `@昵称 + head` 不超过 500 字上限。
+
+### 新增
+- **入站昵称/群资料预取**：
+  - 群消息首次到达时预取群名、群主、头像、成员昵称表
+    （`/Group/GetChatRoomInfoDetail` + `/Group/GetChatRoomMemberDetail`），
+    写入 `AstrBotMessage.group`，AI 提示词看到的是“张三”而不是 `wxid_xxx`；
+  - 私聊缺 `fromNick` 时查通讯录昵称；
+  - 缓存 30 分钟（失败负缓存 60 秒），同一份成员昵称表也供引用回复 @ 使用，
+    预取后引用回复通常零额外请求；群信息/成员查询只有**都成功**才走长缓存，
+    部分失败 60 秒后自动重试，避免成员昵称缺失半小时。
+- **出站串行 + 节流**：同一会话整条消息链持有会话级锁，分片不会交错；
+  vendor 发送请求按 `wpp_send_interval_ms`（默认 300ms）串行。
+- **发送结果统计**：`sent / failed / consecutive_failures / last_error` 进入
+  `WppAccount.stats["send"]`，WebUI/策略页可见；连续失败 3 次告警。
+- **出站复读保护**：同一会话相同文本在 300 秒内第 3 次起跳过
+  （`wpp_outbound_repeat_*` 可调），防止 LLM 复读刷屏。
+- **策略管理 Dashboard 页**：`pages/policy/index.html`，可查看/修改各账号的
+  `allow_users / block_users / blacklist_groups / proactive_groups /
+  group_reply / require_at_mention`，并一键同步 Heartflow；
+  新增 Web API `/astrbot-plugin-wpp/policy`、`/policy/update`、
+  `/heartflow-sync`。
+- **管理员聊天命令**（AstrBot `PermissionType.ADMIN`）：
+  - `/wpp_policy` 查看全部策略
+  - `/wpp_policy <账号> <字段> add|del|set <值...>`
+  - `/wpp_sync [实例id]` 立即同步 Heartflow 白名单
+- **Heartflow 白名单周期自愈**：除启动/策略变更/热更新外，每 5 分钟幂等同步一次；
+  `group_reply=all` 且无法枚举全部群时告警一次。
+- **媒体懒加载开关** `wpp_lazy_media`（默认 `true`）：启用内置
+  `group_icl_enable` / `group_message_history_enable` 时设为 `false`，
+  可在事件创建阶段就拿到真实图片/文件/视频。
+- **其它消息类型明确处理**：表情包（type=47）保留占位文本；好友申请
+  （`fmessage`）、群邀请/系统消息、拍一拍等 sysmsg 静默并归类日志。
+- `metadata.yaml` 增加 `astrbot_version: ">=4.16.0,<5"`；新增
+  `pyproject.toml`（ruff 配置）与 GitHub Actions CI（ruff + compileall）。
+- 新增 `tests/test_mainpath_smoke.py`（真实主路径 24 项断言）、
+  `tests/test_client_guard.py`（群资料/节流/复读/统计）、
+  `tests/test_policy_api.py`。
+
+### 配置
+新增平台配置项：
+`wpp_lazy_media`、`wpp_send_interval_ms`、`wpp_outbound_repeat_guard`、
+`wpp_outbound_repeat_window`、`wpp_outbound_repeat_limit`。
+
+### 测试
+- 测试总数 136；真实主路径冒烟 24/24；真实 vendor 只读群资料冒烟通过
+  （群名/群主/4 名成员昵称）。
+
 ## v0.6.3 (2026-10-17) — 白名单自动同步到 Heartflow
 
 ### 新增
