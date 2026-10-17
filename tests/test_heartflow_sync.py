@@ -28,10 +28,58 @@ class TestPureHelpers(unittest.TestCase):
                 proactive_groups=set(),
             ),
         ]
+        # 群白名单必须包括心流白名单: g2 只在 proactive_groups, 不在群白名单,
+        # 适配器会在群白名单检查时拒绝它, 因此不能同步给 Heartflow。
         self.assertEqual(
             sync_mod.collect_group_ids(accounts),
-            {"g1@chatroom", "g2@chatroom"},
+            {"g1@chatroom"},
         )
+
+    def test_collect_group_ids_without_group_whitelist_keeps_proactive(self):
+        accounts = [
+            SimpleNamespace(
+                allow_users={"wxid_a"},
+                proactive_groups={"g2@chatroom"},
+            ),
+        ]
+        self.assertEqual(
+            sync_mod.collect_group_ids(accounts),
+            {"g2@chatroom"},
+        )
+
+    def test_custom_mode_is_subset_of_group_whitelist(self):
+        accounts = [
+            SimpleNamespace(
+                allow_users={"g1@chatroom", "g2@chatroom"},
+                proactive_groups=set(),
+            ),
+        ]
+        groups, rejected = sync_mod.resolve_heartflow_groups(
+            accounts,
+            custom_groups=["g1@chatroom", "g3@chatroom"],
+            mode="custom",
+        )
+        self.assertEqual(groups, {"g1@chatroom"})
+        self.assertEqual(rejected, {"g3@chatroom"})
+
+    def test_custom_mode_empty_whitelist_allows_custom_groups(self):
+        accounts = [SimpleNamespace(allow_users={"wxid_a"}, proactive_groups=set())]
+        groups, rejected = sync_mod.resolve_heartflow_groups(
+            accounts, custom_groups=["g9@chatroom"], mode="custom"
+        )
+        self.assertEqual(groups, {"g9@chatroom"})
+        self.assertEqual(rejected, set())
+
+    def test_auto_mode_references_group_whitelist(self):
+        accounts = [
+            SimpleNamespace(
+                allow_users={"wxid_a", "g1@chatroom"},
+                proactive_groups={"g2@chatroom"},
+            ),
+        ]
+        groups, rejected = sync_mod.resolve_heartflow_groups(accounts, mode="auto")
+        self.assertEqual(groups, {"g1@chatroom"})
+        self.assertEqual(rejected, {"g2@chatroom"})
 
     def test_build_umos_sorted_and_dedup(self):
         self.assertEqual(

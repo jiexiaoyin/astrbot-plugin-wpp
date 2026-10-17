@@ -211,6 +211,8 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 | `wpp_group_reply` | — | **单账号模式**群消息准入策略: `atbot` / `none` / `all`（`all`=放行所有群消息，观察模式，不强制回复）|
 | `wpp_proactive_groups` | — | **单账号模式**额外主动候选群（逗号分隔群 ID）；群白名单已自动共用，通常无需填写 |
 | `wpp_sync_heartflow_whitelist` | — | 群白名单自动同步到 Heartflow `chat_whitelist`（默认 `true`，未装 Heartflow 自动跳过；每 5 分钟自愈）|
+| `wpp_heartflow_whitelist_mode` | — | `auto`=参考 WPP 群白名单（默认）；`custom`=单独使用 `wpp_heartflow_groups` |
+| `wpp_heartflow_groups` | — | `custom` 模式的单独 Heartflow 群白名单（逗号分隔群 ID），必须是 WPP 群白名单的子集 |
 | `wpp_lazy_media` | — | 未 @ 群消息媒体懒加载（默认 `true`）；启用内置 `group_icl_enable` / `group_message_history_enable` 时建议设为 `false` |
 | `wpp_send_interval_ms` | — | 同一会话两次发送的最小间隔，默认 `300` 毫秒；`0`=不节流 |
 | `wpp_outbound_repeat_guard` | — | 出站复读保护（默认 `true`）：窗口内相同文本超过上限后跳过 |
@@ -295,6 +297,21 @@ Heartflow 的 `chat_whitelist`；群白名单本身就是主动候选，**一份
 - 另外每 5 分钟幂等自愈一次，Heartflow 重载/配置被外部改写后能自动恢复；
 - 写盘后同时更新已加载的 Heartflow 实例，**无需重启**；
 - 可用 `wpp_sync_heartflow_whitelist=false` 关闭；未安装 Heartflow 时自动跳过。
+
+**两种白名单来源**（`wpp_heartflow_whitelist_mode`）：
+
+| 模式 | 行为 |
+|---|---|
+| `auto`（默认） | 参考 WPP 群白名单：Heartflow 白名单 = 群白名单 + 显式 `proactive_groups` |
+| `custom` | 单独设置：Heartflow 白名单 = `wpp_heartflow_groups` 中列出的群 |
+
+> ⚠️ **不变量：群白名单必须包括心流白名单**。`custom` 中的群如果不在
+> WPP 群白名单（`allow_users` 的 `@chatroom`）中，会被拒绝并跳过同步，
+> 同时写 WARNING 日志。因为适配器会先按群白名单拦截，Heartflow 永远
+> 看不到这些群的消息。请先用 `/group add <群ID>` 把群加入群白名单。
+
+`custom` 模式适合“群白名单很大，但只让心流观察其中几个群”的场景；
+`auto` 模式适合“所有白名单群都交给心流判断”。
 
 #### 媒体懒加载
 

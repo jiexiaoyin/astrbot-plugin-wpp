@@ -48,7 +48,8 @@ from astrbot.core.platform.message_session import MessageSession
 from .wpp_account import WppAccount
 from .wpp_event import WppMessageEvent
 from .wpp_heartflow import (
-    collect_group_ids,
+    HEARTFLOW_WHITELIST_MODES,
+    resolve_heartflow_groups,
     sync_heartflow_whitelist as sync_heartflow_config,
 )
 from .wpp_messages import extract_all_msg_src, safe_str, split_users
@@ -188,6 +189,16 @@ WPP_CONFIG_METADATA = {
         "type": "bool",
         "hint": "默认 true。把各账号的群白名单 + 主动候选群同步到 Heartflow 的 chat_whitelist (只替换本平台的 UMO 条目, 保留其他平台条目), 写盘并实时更新已加载实例。启动/策略变更/热更新即时同步, 并每 5 分钟自愈一次。未安装 Heartflow 时自动跳过。",
     },
+    "wpp_heartflow_whitelist_mode": {
+        "description": "Heartflow 白名单来源",
+        "type": "string",
+        "hint": 'auto=参考 WPP 群白名单 (默认); custom=用下方 wpp_heartflow_groups 单独设置。custom 中的群必须在群白名单 (allow_users 的 @chatroom) 中, 否则会被拒绝并告警。',
+    },
+    "wpp_heartflow_groups": {
+        "description": "单独设置的 Heartflow 群白名单 (custom 模式)",
+        "type": "string",
+        "hint": "逗号分隔群 ID, 仅 wpp_heartflow_whitelist_mode=custom 时生效。群白名单必须包含这些群, 适配器才会放行未@消息。",
+    },
     "wpp_lazy_media": {
         "description": "未@群消息媒体懒加载",
         "type": "bool",
@@ -240,6 +251,8 @@ WPP_CONFIG_METADATA = {
         "wpp_group_reply": "atbot",
         "wpp_proactive_groups": "",
         "wpp_sync_heartflow_whitelist": True,
+        "wpp_heartflow_whitelist_mode": "auto",
+        "wpp_heartflow_groups": "",
         "wpp_lazy_media": True,
         "wpp_send_interval_ms": 300,
         "wpp_outbound_repeat_guard": True,
@@ -277,6 +290,19 @@ class WppPlatformAdapter(Platform):
         self.heartflow_sync_enabled = _as_bool(
             platform_config.get("wpp_sync_heartflow_whitelist"), True
         )
+        hf_mode = str(
+            platform_config.get("wpp_heartflow_whitelist_mode", "auto") or "auto"
+        ).strip().lower()
+        if hf_mode not in HEARTFLOW_WHITELIST_MODES:
+            logger.warning(
+                f"[WPP] 未知 Heartflow 白名单模式 {hf_mode!r}, 回退 auto"
+            )
+            hf_mode = "auto"
+        self.heartflow_whitelist_mode = hf_mode
+        self.heartflow_groups = _as_csv(
+            platform_config.get("wpp_heartflow_groups", "")
+        )
+        self._heartflow_rejected_warned: set[str] = set()
         self.lazy_media = _as_bool(platform_config.get("wpp_lazy_media"), True)
         self.send_interval_ms = max(
             0, _as_int(platform_config.get("wpp_send_interval_ms"), 300)
@@ -421,7 +447,18 @@ class WppPlatformAdapter(Platform):
         if not getattr(self, "heartflow_sync_enabled", True):
             return
         try:
-            groups = collect_group_ids(self.accounts)
+            groups, rejected = resolve_heartflow_groups(
+                self.accounts,
+                getattr(self, "heartflow_groups", set()),
+                getattr(self, "heartflow_whitelist_mode", "auto"),
+            )
+            if rejected and rejected != self._heartflow_rejected_warned:
+                self._heartflow_rejected_warned = set(rejected)
+                logger.warning(
+                    "[WPP] Heartflow 白名单要求群白名单必须包含它们; 以下群不在 "
+                    f"allow_users 群白名单, 已跳过同步: {', '.join(sorted(rejected))}。"
+                    "请先 /group add 或从 Heartflow 单独白名单移除。"
+                )
             if (
                 not self._heartflow_all_warned
                 and any(getattr(a, "group_reply", "") == "all" for a in self.accounts)

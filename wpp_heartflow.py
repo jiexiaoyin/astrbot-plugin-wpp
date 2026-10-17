@@ -1,8 +1,13 @@
 """WPP 群白名单 → Heartflow `chat_whitelist` 单向同步。
 
-同步源: 各账号 `allow_users` 中的群 ID + `proactive_groups`。
-同步目标: `data/config/astrbot_plugin_Heartflow_config.json`。
+两种来源 (wpp_heartflow_whitelist_mode):
+  - auto: 参考 WPP 群白名单 (allow_users 的 @chatroom + proactive_groups);
+  - custom: 单独使用 wpp_heartflow_groups, 但必须是群白名单的子集。
 
+不变量: 群白名单必须包括心流白名单。群白名单非空时, 不在白名单中的
+目标群会被拒绝并跳过同步, 避免 Heartflow 白名单包含适配器不会放行的群。
+
+同步目标: `data/config/astrbot_plugin_Heartflow_config.json`。
 只替换本平台实例的 `<platform_id>:GroupMessage:` 条目, 保留其他平台/手动条目;
 写盘后同时更新已加载的 Heartflow 实例, 不需要重启 AstrBot。
 """
@@ -29,18 +34,74 @@ def configure(context: Any) -> None:
     _context = context
 
 
-def collect_group_ids(accounts: Iterable[Any]) -> set[str]:
-    """汇总需要进 Heartflow 的群 ID: 群白名单 + 主动候选群。"""
+HEARTFLOW_WHITELIST_MODES = ("auto", "custom")
+
+
+def _normalize_groups(values: Iterable[Any]) -> set[str]:
+    return {str(value).strip() for value in values or () if str(value).strip()}
+
+
+def account_group_whitelist(accounts: Iterable[Any]) -> set[str]:
+    """汇总各账号群白名单 (allow_users 中 @chatroom 结尾的项)。"""
     groups: set[str] = set()
     for acct in accounts or ():
         for user in getattr(acct, "allow_users", ()) or ():
             value = str(user).strip()
             if value.endswith("@chatroom"):
                 groups.add(value)
-        for group in getattr(acct, "proactive_groups", ()) or ():
-            value = str(group).strip()
-            if value:
-                groups.add(value)
+    return groups
+
+
+def account_proactive_groups(accounts: Iterable[Any]) -> set[str]:
+    """汇总各账号显式主动候选群。"""
+    groups: set[str] = set()
+    for acct in accounts or ():
+        groups.update(_normalize_groups(getattr(acct, "proactive_groups", ()) or ()))
+    return groups
+
+
+def resolve_heartflow_groups(
+    accounts: Iterable[Any],
+    custom_groups: Iterable[Any] = (),
+    mode: str = "auto",
+) -> tuple[set[str], set[str]]:
+    """计算 Heartflow 白名单, 并返回 (可用群, 被群白名单拒绝的群)。
+
+    mode:
+      - auto: 参考 WPP 群白名单 (并包含显式 proactive_groups), 默认;
+      - custom: 只用 custom_groups 单独设置, 但必须是群白名单的子集。
+
+    不变量: **群白名单必须包括心流白名单**。群白名单非空时, 任何不在
+    群白名单中的目标群都会被拒绝并跳过, 避免 Heartflow 收到适配器根本
+    不会放行的群。群白名单为空 = 不限制群, 此时 custom/proactive 均可用。
+    """
+    whitelist = account_group_whitelist(accounts)
+    custom = _normalize_groups(custom_groups)
+    normalized = str(mode or "auto").strip().lower()
+    if normalized in ("custom", "manual", "separate"):
+        target = set(custom)
+    elif normalized in ("auto", "reference", "whitelist", ""):
+        target = whitelist | account_proactive_groups(accounts)
+    else:
+        logger.warning(
+            f"[WPP] 未知 Heartflow 白名单模式 {mode!r}, 回退 auto (参考群白名单)"
+        )
+        target = whitelist | account_proactive_groups(accounts)
+
+    rejected: set[str] = set()
+    if whitelist:
+        rejected = target - whitelist
+        target &= whitelist
+    return target, rejected
+
+
+def collect_group_ids(
+    accounts: Iterable[Any],
+    custom_groups: Iterable[Any] = (),
+    mode: str = "auto",
+) -> set[str]:
+    """汇总需要进 Heartflow 的群 ID (兼容旧调用)。"""
+    groups, _ = resolve_heartflow_groups(accounts, custom_groups, mode)
     return groups
 
 

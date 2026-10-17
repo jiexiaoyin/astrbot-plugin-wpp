@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.7.2 (2026-10-17) — Heartflow 白名单来源可选
+
+### 新增
+- **Heartflow 白名单两种来源**（`wpp_heartflow_whitelist_mode`）：
+  - `auto`（默认）：参考 WPP 群白名单，Heartflow 白名单 = 群白名单 + 显式
+    `proactive_groups`；
+  - `custom`：使用 `wpp_heartflow_groups` 单独设置，适合“群白名单很大，
+    只让心流观察其中几个群”。
+- **强制不变量：群白名单必须包括心流白名单**。`custom` 中不在
+  `allow_users` 群白名单里的群会被拒绝并跳过同步，同时写 WARNING；
+  避免 Heartflow 白名单包含适配器根本不会放行的群。
+- 新增 `wpp_heartflow_groups` 配置项（逗号分隔群 ID）。
+
+### 测试
+- 新增 auto/custom 解析、custom 子集校验、空群白名单等用例；测试总数 143。
+
 ## v0.7.1 (2026-10-17) — 主动回复与群白名单共用
 
 ### 变更
