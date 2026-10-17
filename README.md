@@ -56,7 +56,7 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 |---|---|---|
 | 文本 | 直接收发 | 最基础的对话 |
 | 图片 | CDN 完整下载 | `/Tools/CdnDownloadImage` 完整大图注入 AI |
-| 语音 | vendor 转写 | 自带 `voice.transcript`（微信官方）；缺失时占位 `[语音]` |
+| 语音 | 转写 + STT 兜底 | 优先 `voice.transcript`（微信官方）；缺失时 `DownloadVoiceBinary` → `Record` → AstrBot 核心 STT |
 | 文件 | 下载 + AI 读取 | `DownloadFileBinary` → `File` 组件，AI 可读 Excel/PDF |
 | 视频 | 分片下载 | `DownloadVideo` 分片 → `Video` 组件 |
 | 链接/小程序 | 结构化摘要 | `[链接]` / `[小程序]`：标题 + 描述 + URL/页面路径，**不传原始 XML** |

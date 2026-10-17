@@ -620,9 +620,26 @@ def to_astrbot_message(
             abm.message_str = transcript
             abm.message = [Plain(transcript)]
         else:
-            # 没有转写也保留一条占位文本, 避免提交空消息链给 AI
+            # 没有 vendor 转写: 保留占位 + 下载元数据, 由 wpp_media 下载成 Record
+            # 交给 AstrBot 核心 preprocess 的 STT (与 NapCat 等平台一致)
             abm.message_str = "[语音]"
             abm.message = [Plain("[语音]")]
+            dc = (
+                voice_obj.get("download_context")
+                if isinstance(voice_obj.get("download_context"), dict)
+                else {}
+            )
+            abm._wpp_voice_meta = {
+                "msg_id": safe_str(dc.get("msg_id")) or msg_id,
+                "new_msg_id": safe_str(dc.get("new_msg_id")),
+                "client_msg_id": safe_str(dc.get("client_msg_id")),
+                "master_buf_id": safe_str(dc.get("master_buf_id")) or "0",
+                "length": safe_num(dc.get("length"), 0),
+                "format": safe_num(dc.get("format"), 4),
+                "chat_room_name": safe_str(dc.get("chat_room_name")) or chatroom_id,
+                "from_user_name": safe_str(dc.get("from_user_name")) or from_wxid,
+                "to_user_name": safe_str(dc.get("to_user_name")) or to_wxid or self_wxid,
+            }
 
     elif msg_type == MSG_TYPE_IMAGE or safe_str(src.get("kind")).lower() == "image":
         img_obj = src.get("image") if isinstance(src.get("image"), dict) else {}

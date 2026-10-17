@@ -112,6 +112,36 @@ async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
             msg.message_str = "[文件] (下载失败)"
             msg.message = _non_media_prefix(msg) + [Plain("[文件] (下载失败)")]
 
+    voice_meta = getattr(msg, "_wpp_voice_meta", None)
+    if voice_meta and voice_meta.get("msg_id"):
+        try:
+            data = await api.download_voice_binary(
+                str(voice_meta.get("msg_id", "")),
+                new_msg_id=str(voice_meta.get("new_msg_id", "")),
+                client_msg_id=str(voice_meta.get("client_msg_id", "")),
+                master_buf_id=str(voice_meta.get("master_buf_id", "0") or "0"),
+                length=int(voice_meta.get("length", 0) or 0),
+                voice_format=int(voice_meta.get("format", 4) or 4),
+                chat_room_name=str(voice_meta.get("chat_room_name", "")),
+                from_user_name=str(voice_meta.get("from_user_name", "")),
+                to_user_name=str(voice_meta.get("to_user_name", "")),
+            )
+            if data:
+                path = _temp_path("voice", ".silk")
+                with open(path, "wb") as f:
+                    f.write(data)
+                temp_files.append(path)
+                msg.message_str = "[语音]"
+                msg.message = _non_media_prefix(msg) + [Record(file=path)]
+            else:
+                logger.warning("[WPP] 语音下载失败")
+                msg.message_str = "[语音下载失败]"
+                msg.message = _non_media_prefix(msg) + [Plain("[语音] (下载失败)")]
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] 语音下载异常: {e}")
+            msg.message_str = "[语音下载失败]"
+            msg.message = _non_media_prefix(msg) + [Plain("[语音] (下载失败)")]
+
     video_meta = getattr(msg, "_wpp_video_meta", None)
     if video_meta and video_meta.get("msg_id"):
         try:

@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.4.1 (2026-10-17) — 语音缺失转写时接入 AstrBot STT
+
+### 新增
+- **语音 STT 兜底**：vendor 没有 `voice.transcript` 时，从 `voice.download_context` 调用
+  `/Tools/DownloadVoiceBinary` 下载 silk 原文件，注入 AstrBot `Record` 组件；
+  由核心 preprocess 阶段 `ensure_wav`（内置 silk→wav）+ STT Provider 转写
+  - 与 NapCat 等平台路径一致，**不重复造 STT**
+  - 下载失败保留 `[语音] (下载失败)` 占位，不影响其他消息
+  - 20MB 上限；`to_user_name` / `from_user_name` 按 vendor v1 契约传参
+
+### 测试
+- 新增 3 个语音用例（download_context 提取、vendor 转写优先、silk→Record）
+- 测试总数 63
+
 ## v0.4.0 (2026-10-17) — appmsg 结构化解析 + 全类型卡片可读
 
 ### 新增：`wpp_appmsg.py`（纯函数卡片解析器）

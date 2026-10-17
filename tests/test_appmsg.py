@@ -14,6 +14,7 @@
 """
 
 import importlib
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -274,6 +275,43 @@ class TestCompat(unittest.TestCase):
             policy.is_allowed(p, "wxid_f", True, "123@chatroom", "@张三 hi", "", ["wxid_bot"])
         )
 
+    def test_voice_without_transcript_keeps_download_context(self):
+        src = {
+            "sender_id": "wxid_f",
+            "msg_id": "v1",
+            "msg_type": 34,
+            "content": "<voicemsg/>",
+            "voice": {
+                "download_context": {
+                    "msg_id": 123,
+                    "new_msg_id": "n1",
+                    "client_msg_id": "c1",
+                    "master_buf_id": "m1",
+                    "format": 4,
+                    "length": 1200,
+                    "from_user_name": "wxid_f",
+                    "to_user_name": "wxid_bot",
+                }
+            },
+        }
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
+        meta = abm._wpp_voice_meta
+        self.assertEqual(meta["msg_id"], "123")
+        self.assertEqual(meta["new_msg_id"], "n1")
+        self.assertEqual(meta["length"], 1200)
+        self.assertEqual(meta["format"], 4)
+
+    def test_voice_with_transcript_skips_download(self):
+        src = {
+            "sender_id": "wxid_f",
+            "msg_id": "v2",
+            "msg_type": 34,
+            "voice": {"transcript": "你好", "download_context": {"msg_id": 1}},
+        }
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
+        self.assertEqual(abm.message_str, "你好")
+        self.assertFalse(hasattr(abm, "_wpp_voice_meta"))
+
     def test_media_prefix_preserves_at(self):
         from astrbot.api.message_components import At, Plain
         from astrbot.api.platform import AstrBotMessage
@@ -283,6 +321,43 @@ class TestCompat(unittest.TestCase):
         prefix = media._non_media_prefix(abm)
         self.assertEqual(len(prefix), 1)
         self.assertEqual(type(prefix[0]).__name__, "At")
+
+
+class _FakeVoiceApi:
+    def __init__(self):
+        self.calls = None
+
+    async def download_voice_binary(self, *args, **kwargs):
+        self.calls = kwargs
+        return b"\x02#!SILK_V3" + b"\x00" * 32
+
+
+class TestVoiceEnrich(unittest.IsolatedAsyncioTestCase):
+    async def test_voice_download_becomes_record(self):
+        src = {
+            "sender_id": "wxid_f",
+            "msg_id": "v3",
+            "msg_type": 34,
+            "voice": {
+                "download_context": {
+                    "msg_id": 456,
+                    "new_msg_id": "n2",
+                    "length": 900,
+                    "from_user_name": "wxid_f",
+                    "to_user_name": "wxid_bot",
+                }
+            },
+        }
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
+        api = _FakeVoiceApi()
+        paths = await media.enrich_media(api, abm)
+        self.assertEqual(len(paths), 1)
+        self.assertTrue(paths[0].endswith(".silk"))
+        self.assertTrue(os.path.exists(paths[0]))
+        self.assertEqual(type(abm.message[0]).__name__, "Record")
+        self.assertEqual(api.calls["voice_format"], 4)
+        self.assertEqual(api.calls["to_user_name"], "wxid_bot")
+        os.unlink(paths[0])
 
 
 if __name__ == "__main__":

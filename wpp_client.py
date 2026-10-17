@@ -204,6 +204,64 @@ class WppClient:
         except Exception:  # noqa: BLE001
             return None
 
+    # ------------------------------------------------------------------ 语音下载
+    async def download_voice_binary(
+        self,
+        msg_id: str,
+        new_msg_id: str = "",
+        client_msg_id: str = "",
+        master_buf_id: str = "0",
+        length: int = 0,
+        voice_format: int = 4,
+        chat_room_name: str = "",
+        from_user_name: str = "",
+        to_user_name: str = "",
+    ) -> bytes | None:
+        """POST /api/Tools/DownloadVoiceBinary — 下载 v1 语音原文件 (silk 字节流)。
+
+        参考 wpp-openclaw voice.ts / tools.js:
+          authcode 走 query, TokenKey 走 header, body 使用 snake_case
+          (注意是 to_user_name, 不是 to_wxid)
+        返回原始 bytes; 失败返回 None。
+        """
+        session = await self._session_acquire()
+        url = self._url("/Tools/DownloadVoiceBinary")
+        headers = self._headers()
+        headers["TokenKey"] = self.auth_token
+        body: dict = {
+            "msg_id": msg_id,
+            "new_msg_id": new_msg_id,
+            "client_msg_id": client_msg_id,
+            "master_buf_id": master_buf_id or "0",
+            "format": voice_format,
+            "length": length,
+            "chat_room_name": chat_room_name,
+            "from_user_name": from_user_name,
+            "to_user_name": to_user_name,
+        }
+        try:
+            async with session.post(
+                url, json=body, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=max(self.timeout, 60)),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                content_length = resp.headers.get("Content-Length")
+                if content_length and content_length.isdigit() and int(content_length) > 20 * 1024 * 1024:
+                    logger.warning(f"[WPP] voice too large: {content_length} bytes, skip")
+                    return None
+                buf = bytearray()
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    buf.extend(chunk)
+                    if len(buf) > 20 * 1024 * 1024:
+                        logger.warning("[WPP] voice too large (> 20MB), skip")
+                        return None
+                if len(buf) < 10:
+                    return None
+                return bytes(buf)
+        except Exception:  # noqa: BLE001
+            return None
+
     # ------------------------------------------------------------------ 视频下载
     async def download_video(self, msg_id: str, to_wxid: str, data_len: int, compress_type: int = 0) -> bytes | None:
         """POST /api/Tools/DownloadVideo — 分片下载 v1 视频.
