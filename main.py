@@ -16,6 +16,7 @@ from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
 from .wpp_client import WppClient
+from .wpp_heartflow import configure as configure_heartflow_sync
 from .wpp_media import enrich_media
 
 # 触发平台适配器注册: AstrBot 加载插件目录是 namespace package,
@@ -30,6 +31,9 @@ PLUGIN_NAME = "astrbot-plugin-wpp"
 class WppPlugin(Star):
     def __init__(self, context: Context) -> None:
         super().__init__(context)
+        # Heartflow 白名单同步需要一个能访问已加载插件的 Context,
+        # 平台适配器本身没有 context, 在这里注入给 wpp_heartflow。
+        configure_heartflow_sync(context)
         # 注册插件 Pages 后端 Web API (账号信息查询)
         context.register_web_api(
             f"/{PLUGIN_NAME}/account-info",

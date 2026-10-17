@@ -418,6 +418,18 @@ class WppAccount:
             logger.info(f"[WPP:{self.account_id}] 运行时配置已持久化 → {self.store.config_path}")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[WPP:{self.account_id}] 写配置文件失败: {e}")
+            return
+        self._sync_heartflow_whitelist("policy")
+
+    def _sync_heartflow_whitelist(self, reason: str) -> None:
+        """白名单变化后同步给 Heartflow (平台级聚合所有账号)。"""
+        sync = getattr(self.platform, "sync_heartflow_whitelist", None)
+        if not callable(sync):
+            return
+        try:
+            sync(reason)
+        except Exception as e:  # noqa: BLE001 - 可选集成, 失败不影响命令
+            logger.debug(f"[WPP:{self.account_id}] Heartflow 白名单同步失败: {e}")
 
     # ------------------------------------------------------------------ 维护循环
     async def _maintenance_loop(self) -> None:
@@ -439,6 +451,7 @@ class WppAccount:
                         or self.proactive_groups != old.proactive_groups
                     ):
                         logger.info(f"[WPP:{self.account_id}] 配置文件外部修改已热更新")
+                        self._sync_heartflow_whitelist("hot-reload")
 
                 self._flush_dedup()
 

@@ -186,6 +186,7 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 | `wpp_block_users` | — | **单账号模式**私聊黑名单 wxid（逗号分隔），全部放行时排除指定人；群聊里也屏蔽该成员 |
 | `wpp_group_reply` | — | **单账号模式**群消息准入策略: `atbot` / `none` / `all`（`all`=放行所有群消息，观察模式，不强制回复）|
 | `wpp_proactive_groups` | — | **单账号模式**主动回复候选群（逗号分隔群 ID）；未 @ 消息也放行，是否回复由决策插件决定 |
+| `wpp_sync_heartflow_whitelist` | — | 群白名单自动同步到 Heartflow `chat_whitelist`（默认 `true`，未装 Heartflow 自动跳过）|
 | `wpp_ws_url` | — | WS 实时通道地址（如 `wss://<vendor-domain>/ws/sync`），主通道 |
 | `wpp_webhook_enabled` | — | 是否启用 webhook 兜底（默认 `false`，仅 WS）|
 
@@ -253,6 +254,14 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 
 例如 `wpp:GroupMessage:123@chatroom`。用 `/proactive list` 可直接看到每个群
 对应的 UMO；多账号或自定义平台实例 id 时前缀会不同。
+
+**自动同步（默认开启）**：WPP 会把各账号的群白名单 + 主动候选群自动同步到
+Heartflow 的 `chat_whitelist`：
+
+- 只替换本平台的 `wpp:GroupMessage:` 条目，其他平台/手写条目保留；
+- `/group`、`/proactive` 增删、外部修改 `wpp_whitelist.json` 热更新、适配器启动时都会同步；
+- 写盘后同时更新已加载的 Heartflow 实例，**无需重启**；
+- 可用 `wpp_sync_heartflow_whitelist=false` 关闭；未安装 Heartflow 时自动跳过。
 
 #### 媒体懒加载
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.6.3 (2026-10-17) — 白名单自动同步到 Heartflow
+
+### 新增
+- **WPP 群白名单 → Heartflow `chat_whitelist` 单向同步**（`wpp_heartflow.py`）：
+  - 同步源：各账号 `allow_users` 中的群 ID + `proactive_groups`
+  - 只替换本平台实例的 `<platform_id>:GroupMessage:` 条目，保留其他平台/手写条目
+  - `/group`、`/proactive` 增删后立即同步；`wpp_whitelist.json` 外部热更新后同步；
+    适配器启动时同步
+  - 写盘后同时更新已加载的 Heartflow 实例的 `chat_whitelist`，**无需重启 AstrBot**
+  - 原子写保留原文件 BOM；未安装 Heartflow / 无配置文件时自动跳过
+- 新增配置项 `wpp_sync_heartflow_whitelist`（默认 `true`，可关闭）
+- 新增 `tests/test_heartflow_sync.py`（8 个用例）
+
+### 测试
+- 测试总数 113
+
 ## v0.6.2 (2026-10-17) — 引用回复补全真实昵称
 
 ### 修复

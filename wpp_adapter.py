@@ -47,6 +47,10 @@ from astrbot.core.platform.message_session import MessageSession
 
 from .wpp_account import WppAccount
 from .wpp_event import WppMessageEvent
+from .wpp_heartflow import (
+    collect_group_ids,
+    sync_heartflow_whitelist as sync_heartflow_config,
+)
 from .wpp_messages import extract_all_msg_src, safe_str, split_users
 from .wpp_send import send_chain
 from .wpp_storage import plugin_data_dir, safe_account_id
@@ -172,6 +176,11 @@ WPP_CONFIG_METADATA = {
         "type": "string",
         "hint": "仅单账号时用。这些群的未@消息也会放行给 AstrBot, 但适配器不唤醒、不强制回复; 由 Heartflow/内置 active_reply 决定是否接话。留空=关闭。",
     },
+    "wpp_sync_heartflow_whitelist": {
+        "description": "群白名单自动同步到 Heartflow",
+        "type": "bool",
+        "hint": "默认 true。把各账号的群白名单 + 主动候选群同步到 Heartflow 的 chat_whitelist (只替换本平台的 UMO 条目, 保留其他平台条目), 写盘并实时更新已加载实例。未安装 Heartflow 时自动跳过。",
+    },
     "wpp_ws_url": {
         "description": "WS 实时消息通道地址 (vendor /ws/sync)",
         "type": "string",
@@ -198,6 +207,7 @@ WPP_CONFIG_METADATA = {
         "wpp_block_users": "",
         "wpp_group_reply": "atbot",
         "wpp_proactive_groups": "",
+        "wpp_sync_heartflow_whitelist": True,
         "wpp_ws_url": "",
         "wpp_webhook_enabled": False,
     },
@@ -226,6 +236,10 @@ class WppPlatformAdapter(Platform):
         self.base_url = str(platform_config.get("wpp_base_url", "http://127.0.0.1:18062")).rstrip("/")
         self.ws_url = str(platform_config.get("wpp_ws_url", "") or "").strip()
         self.webhook_enabled = _as_bool(platform_config.get("wpp_webhook_enabled"), False)
+        # 群白名单自动同步到 Heartflow 的 chat_whitelist (可选集成, 默认开)
+        self.heartflow_sync_enabled = _as_bool(
+            platform_config.get("wpp_sync_heartflow_whitelist"), True
+        )
 
         # 缓存平台元数据 (AstrBot 每条消息都会取, 不要每次重建)
         self.metadata = PlatformMetadata(
@@ -335,6 +349,23 @@ class WppPlatformAdapter(Platform):
 
         # ③ 后台状态循环 (遍历所有账号检查在线 + 心跳)
         self._status_task = asyncio.create_task(self._account_status_loop())
+
+        # ④ 启动时同步 Heartflow 白名单 (此时各插件均已加载)
+        self.sync_heartflow_whitelist("startup")
+
+    def sync_heartflow_whitelist(self, reason: str = "") -> None:
+        """把本实例所有账号的群白名单/主动候选群同步给 Heartflow。
+
+        Heartflow 的 chat_whitelist 是全局配置: 只替换本平台实例的 UMO 条目,
+        其他平台条目保持不变。同步失败只记日志, 不影响消息收发。
+        """
+        if not getattr(self, "heartflow_sync_enabled", True):
+            return
+        try:
+            groups = collect_group_ids(self.accounts)
+            sync_heartflow_config(self.instance_id, groups, reason)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] 同步 Heartflow 白名单失败: {e}")
 
     async def _start_webhook_server(self) -> None:
         """启动 webhook server + 注册 vendor (webhook 已退役, 仅向后兼容)。"""
