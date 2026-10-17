@@ -39,6 +39,7 @@ from .wpp_messages import (
     src_msg_key,
     src_recipient,
     src_sender,
+    skip_reason,
     to_astrbot_message,
 )
 from .wpp_policy import PolicySnapshot, is_allowed
@@ -65,6 +66,7 @@ class WppAccount:
         allow_users: set[str] | None = None,
         group_reply: str = "atbot",
         blacklist_groups: set[str] | None = None,
+        block_users: set[str] | None = None,
         require_at_mention: bool = False,
     ) -> None:
         self.platform = platform
@@ -83,6 +85,7 @@ class WppAccount:
         self.allow_users: set[str] = set(allow_users or ())
         self.group_reply = group_reply
         self.blacklist_groups: set[str] = set(blacklist_groups or ())
+        self.block_users: set[str] = set(block_users or ())
         self.require_at_mention = require_at_mention
         self._load_policy_file()
         self._whitelist_mtime = self.store.config_mtime()
@@ -109,6 +112,7 @@ class WppAccount:
 
         # 过滤日志汇总
         self._filtered_since_report = 0
+        self._ignored_since_report: dict[str, int] = {}
         self._last_filter_report = time.monotonic()
         self._drop_since_report = 0
 
@@ -271,6 +275,17 @@ class WppAccount:
             await self._handle_filehelper_command(content)
             return
 
+        # 系统/服务会话 (公众号/微信团队/微信支付/服务通知...)、状态推送、撤回、支付卡片:
+        # 任何模式都静默 —— "全部放行"也不能让这些消息触发 AI
+        reason = skip_reason(src, self._self_wxid)
+        if reason:
+            key = reason.split(":", 1)[0]
+            self._ignored_since_report[key] = self._ignored_since_report.get(key, 0) + 1
+            logger.debug(
+                f"[WPP:{self.account_id}] 已忽略消息: reason={reason} from={from_wxid or '-'}"
+            )
+            return
+
         logger.debug(
             f"[WPP:{self.account_id}] 收到: from={from_wxid} group={chatroom_id or '-'} "
             f"content={content[:40]!r} self_wxid={self._self_wxid!r}"
@@ -329,6 +344,7 @@ class WppAccount:
     def policy_snapshot(self) -> PolicySnapshot:
         return PolicySnapshot(
             allow_users=set(self.allow_users),
+            block_users=set(self.block_users),
             blacklist_groups=set(self.blacklist_groups),
             group_reply=self.group_reply,
             require_at_mention=self.require_at_mention,
@@ -353,6 +369,9 @@ class WppAccount:
         bl = data.get("blacklist_groups", [])
         if isinstance(bl, list):
             self.blacklist_groups = {str(g).strip() for g in bl if str(g).strip()}
+        bu = data.get("block_users", [])
+        if isinstance(bu, list):
+            self.block_users = {str(u).strip() for u in bu if str(u).strip()}
         if data.get("require_at_mention") is not None:
             self.require_at_mention = bool(data["require_at_mention"])
 
@@ -363,6 +382,7 @@ class WppAccount:
                 "allow_users": sorted(self.allow_users),
                 "group_reply": self.group_reply,
                 "blacklist_groups": sorted(self.blacklist_groups),
+                "block_users": sorted(self.block_users),
                 "require_at_mention": self.require_at_mention,
             })
             self._whitelist_mtime = self.store.config_mtime()
@@ -383,6 +403,7 @@ class WppAccount:
                     self._load_policy_file()
                     if (
                         self.allow_users != old.allow_users
+                        or self.block_users != old.block_users
                         or self.blacklist_groups != old.blacklist_groups
                         or self.group_reply != old.group_reply
                         or self.require_at_mention != old.require_at_mention
@@ -393,11 +414,20 @@ class WppAccount:
 
                 now = time.monotonic()
                 if (
-                    self._filtered_since_report or self._drop_since_report
+                    self._filtered_since_report
+                    or self._drop_since_report
+                    or self._ignored_since_report
                 ) and now - self._last_filter_report >= FILTER_REPORT_INTERVAL:
                     parts = []
                     if self._filtered_since_report:
                         parts.append(f"过滤 {self._filtered_since_report} 条 (白名单/群策略)")
+                    if self._ignored_since_report:
+                        detail = ", ".join(
+                            f"{k}={v}" for k, v in sorted(self._ignored_since_report.items())
+                        )
+                        parts.append(
+                            f"忽略系统/支付/状态 {sum(self._ignored_since_report.values())} 条 ({detail})"
+                        )
                     if self._drop_since_report:
                         parts.append(f"队列溢出丢弃 {self._drop_since_report} 条")
                     logger.info(
@@ -405,6 +435,7 @@ class WppAccount:
                         + ", ".join(parts)
                     )
                     self._filtered_since_report = 0
+                    self._ignored_since_report = {}
                     self._drop_since_report = 0
                     self._last_filter_report = now
             except asyncio.CancelledError:

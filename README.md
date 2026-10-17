@@ -61,10 +61,13 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 | 视频 | 分片下载 | `DownloadVideo` 分片 → `Video` 组件 |
 
 ### 🛡 完善的接入能力
+- **系统消息静默（内置，任何模式生效）**：公众号（`gh_`）、微信团队、微信支付、服务通知、财付通、微信安全中心、订阅号消息等系统会话，以及状态/系统/撤回消息、红包/转账卡片，都不会触发 AI
+- **私聊黑名单**：`wpp_block_users` / `/block`，全部放行模式下排除指定 wxid，群聊里也屏蔽该成员
 - **白名单**：仅白名单 wxid 触发 AI（防陌生人骚扰）
 - **群消息策略**：`atbot`（只回@机器人）/ `none` / `all`
 - **filehelper 白名单命令**：在文件传输助手里发指令管理白名单（仿 wpp-openclaw），三域统一 **add/del/list**
   - `/user add|del <wxid> [wxid...]` 私聊白名单（支持批量）/ `/user list` 查看
+  - `/block add|del|list <wxid> [wxid...]` 私聊黑名单（全部放行模式下排除指定人；群聊里也屏蔽该成员）
   - `/group add|del <群ID> [群ID...]` 群白名单（支持批量）/ `/group list` 查看
   - `/blacklist add|del|list <群ID> [群ID...]` 黑名单群（黑白名单**互斥**，加一边自动移另一边）
   - `/mode atbot|none|all` 群回复模式热切
@@ -161,6 +164,7 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 | `wpp_auth_token` | 二选一 | **单账号模式**：WPP X-Access-Token（= authcode）|
 | `wpp_accounts` | 二选一 | **多账号模式**：账号列表 JSON（见下方多账号章节）|
 | `wpp_allow_users` | — | **单账号模式**白名单 wxid（逗号分隔），空则所有私聊触发 |
+| `wpp_block_users` | — | **单账号模式**私聊黑名单 wxid（逗号分隔），全部放行时排除指定人；群聊里也屏蔽该成员 |
 | `wpp_group_reply` | — | **单账号模式**群消息策略: `atbot` / `none` / `all` |
 | `wpp_ws_url` | — | WS 实时通道地址（如 `wss://<vendor-domain>/ws/sync`），主通道 |
 | `wpp_webhook_enabled` | — | 是否启用 webhook 兜底（默认 `false`，仅 WS）|
@@ -170,7 +174,7 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 ### 👥 多账号（单实例内, 通过 authcode 隔离）
 一个 wpp 适配器实例可管理多个微信账号，**同一 vendor 地址**（`wpp_base_url` + `wpp_ws_url`），通过不同 `authcode` 隔离。每个账号独立：
 - WS 实时连接（用该账号 authcode 鉴权）
-- 白名单/群策略/黑名单（`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/wpp_whitelist.json` 独立持久化）
+- 白名单/私聊黑名单/群策略/群黑名单（`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/wpp_whitelist.json` 独立持久化）
 - filehelper 命令（各自管理自己的白名单）
 - 消息去重 / 机器人身份
 
@@ -178,11 +182,11 @@ docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/t
 ```json
 [
   {"id": "xieyin", "authcode": "<authcode_账号1>", "allow_users": "<wxid_白名单>", "group_reply": "atbot"},
-  {"id": "yirong", "authcode": "<authcode_账号2>", "allow_users": "", "group_reply": "all", "blacklist_groups": "<群id>@chatroom"},
+  {"id": "yirong", "authcode": "<authcode_账号2>", "allow_users": "", "block_users": "<wxid_排除>", "group_reply": "all", "blacklist_groups": "<群id>@chatroom"},
   {"id": "test",  "authcode": "xxx", "require_at_mention": true}
 ]
 ```
-每个账号字段：`id`（唯一）、`authcode`（必填）、`allow_users`/`group_reply`/`blacklist_groups`/`require_at_mention`（可选，默认同单账号）。
+每个账号字段：`id`（唯一）、`authcode`（必填）、`allow_users`/`block_users`/`group_reply`/`blacklist_groups`/`require_at_mention`（可选，默认同单账号）。
 
 filehelper 命令输出带账号标识（如 `【WPP 命令 (账号 xieyin)】`），各账号命令互不影响。
 

@@ -136,6 +136,73 @@ class TestToAstrBotMessage(unittest.TestCase):
         self.assertEqual(type(abm.message[0]).__name__, "Reply")
         self.assertEqual(abm.message[0].message_str, "被引用的话")
 
+    def test_official_and_service_accounts_skipped(self):
+        """公众号 / 微信团队 / 微信支付 / 服务通知等系统会话: 任何模式都不进 AstrBot。"""
+        cases = {
+            "gh_abc123": "official_account",
+            "weixin": "system:weixin",
+            "wxpay": "system:wxpay",
+            "weixinpay": "system:weixinpay",
+            "tenpay": "system:tenpay",
+            "notifymessage": "system:notifymessage",
+            "weixinsrc": "system:weixinsrc",
+            "filehelper": "system:filehelper",
+        }
+        for sender, reason in cases.items():
+            src = {"sender_id": sender, "content": "通知内容", "direction": "incoming"}
+            self.assertEqual(msgs.skip_reason(src, "wxid_bot"), reason)
+            self.assertIsNone(msgs.to_astrbot_message(src, "wxid_bot", "小助手"))
+
+    def test_service_notice_with_empty_sender_uses_conversation(self):
+        """服务通知的 sender 可能为空, 但 conversation_id 是 notifymessage。"""
+        src = {
+            "sender_id": "",
+            "recipient_id": "wxid_bot",
+            "conversation_id": "notifymessage",
+            "content": "服务通知",
+        }
+        self.assertEqual(msgs.skip_reason(src, "wxid_bot"), "system:notifymessage")
+        self.assertIsNone(msgs.to_astrbot_message(src, "wxid_bot", "小助手"))
+
+    def test_system_and_status_messages_skipped(self):
+        """群系统消息 / 状态推送 / 撤回 / sysmsg XML 一律静默。"""
+        cases = [
+            ({"sender_id": "wxid_f", "msg_type": 10000}, "system_msg"),
+            ({"sender_id": "wxid_f", "msg_type": 10002}, "revoke"),
+            ({"sender_id": "wxid_f", "msg_type": 51}, "status"),
+            ({"sender_id": "wxid_f", "kind": "status"}, "kind:status"),
+            ({"sender_id": "wxid_f", "content": '<sysmsg type="revokemsg">x</sysmsg>'}, "sysmsg"),
+        ]
+        for src, reason in cases:
+            self.assertEqual(msgs.skip_reason(src, "wxid_bot"), reason)
+            self.assertIsNone(msgs.to_astrbot_message(src, "wxid_bot", "小助手"))
+
+    def test_payment_card_skipped_but_plain_red_packet_text_kept(self):
+        """红包/转账卡片静默; 纯文本里的"红包"二字不能误杀 (接龙事故教训)。"""
+        card = {
+            "sender_id": "wxid_friend",
+            "msg_type": 49,
+            "content": "微信红包",
+            "app": {"category": "payment_notice"},
+        }
+        self.assertTrue(msgs.is_payment_card(card))
+        self.assertEqual(msgs.skip_reason(card, "wxid_bot"), "payment_card")
+
+        xml_card = {
+            "sender_id": "wxid_friend",
+            "msg_type": 49,
+            "content": "<msg><appmsg><type>2001</type></appmsg></msg>",
+        }
+        self.assertEqual(msgs.skip_reason(xml_card, "wxid_bot"), "payment_card")
+
+        transfer = {"sender_id": "wxid_friend", "msg_type": 49, "content": "[转账]"}
+        self.assertEqual(msgs.skip_reason(transfer, "wxid_bot"), "payment_card")
+
+        plain = {"sender_id": "wxid_friend", "msg_type": 1, "content": "提升业绩，领取红包🧧"}
+        self.assertFalse(msgs.is_payment_card(plain))
+        self.assertIsNone(msgs.skip_reason(plain, "wxid_bot"))
+        self.assertIsNotNone(msgs.to_astrbot_message(plain, "wxid_bot", "小助手"))
+
     def test_file_meta(self):
         src = {
             "sender_id": "wxid_friend",
@@ -181,6 +248,17 @@ class TestPolicy(unittest.TestCase):
         p = policy.PolicySnapshot(allow_users={"u1"})
         self.assertTrue(policy.is_allowed(p, "u1", False, "", "hi"))
         self.assertFalse(policy.is_allowed(p, "u2", False, "", "hi"))
+
+    def test_block_users_wins_in_all_pass_mode(self):
+        """全部放行模式 (空 allow_users) 下, block_users 仍然拒绝。"""
+        p = policy.PolicySnapshot(block_users={"wxid_bad"})
+        self.assertFalse(policy.is_allowed(p, "wxid_bad", False, "", "hi"))
+        self.assertTrue(policy.is_allowed(p, "wxid_ok", False, "", "hi"))
+
+    def test_block_users_also_applies_in_group(self):
+        p = policy.PolicySnapshot(block_users={"wxid_bad"}, group_reply="all")
+        self.assertFalse(policy.is_allowed(p, "wxid_bad", True, "g@chatroom", "hi"))
+        self.assertTrue(policy.is_allowed(p, "wxid_ok", True, "g@chatroom", "hi"))
 
 
 class TestChunkText(unittest.TestCase):

@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.1 (2026-10-17) — 系统消息静默 + 私聊黑名单
+
+### 修复
+- **"全部放行"模式下系统消息触发 AI 回复**：公众号、微信团队、微信支付、服务通知、财付通、微信安全中心、订阅号消息等系统/服务会话，现在**任何模式**都在进入 AstrBot 之前静默
+  - 判据统一收敛到 `wpp_messages.skip_reason()`（`to_astrbot_message` 与账号处理入口共用，避免两处漂移）
+  - 识别 sender/conversation/recipient 中的 `gh_` 前缀与系统 username；兼容服务通知 sender 为空、仅 `conversation_id=notifymessage` 的形态
+  - 同时静默：vendor `kind=status/system`、`msgType=51`（状态）、`10000`（系统消息）、`10002`（撤回）、`<sysmsg>` XML
+- **红包/转账/支付卡片静默**：只按卡片结构（`msgType=49` + app 元数据/XML）判定，**不按正文"红包"关键词**，避免误杀自带"红包"字样的群接龙（历史事故）
+- 每分钟 INFO 汇总新增被忽略消息分类计数（`system=` / `payment_card=` / ...），排查时无需开 debug
+
+### 新增
+- **私聊黑名单**：`wpp_block_users`（单账号）/ `wpp_accounts[].block_users`（多账号），全部放行模式下可排除指定 wxid；群聊里也会屏蔽该成员
+- filehelper 命令 `/block add|del|list`，运行时生效并持久化（与 `/user` 白名单互斥：加入黑名单会自动移出白名单）
+- 测试增至 39 个
+
 ## v0.3.0 (2026-10-17) — 贴合 AstrBot 规范的重构 + 稳定性修复
 
 ### 架构重构（模块拆分）

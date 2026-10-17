@@ -106,6 +106,7 @@ def _parse_accounts(platform_config: dict) -> list[dict]:
                 "allow_users": _as_csv(acct.get("allow_users", "")),
                 "group_reply": str(acct.get("group_reply", "atbot") or "atbot"),
                 "blacklist_groups": _as_csv(acct.get("blacklist_groups", "")),
+                "block_users": _as_csv(acct.get("block_users", "")),
                 "require_at_mention": _as_bool(acct.get("require_at_mention")),
                 "base_url": str(acct.get("base_url") or base_url).rstrip("/"),
                 "ws_url": str(acct.get("ws_url") or ws_url).strip(),
@@ -122,6 +123,7 @@ def _parse_accounts(platform_config: dict) -> list[dict]:
             "allow_users": _as_csv(platform_config.get("wpp_allow_users", "")),
             "group_reply": str(platform_config.get("wpp_group_reply", "atbot") or "atbot"),
             "blacklist_groups": set(),
+            "block_users": _as_csv(platform_config.get("wpp_block_users", "")),
             "require_at_mention": False,
             "base_url": base_url,
             "ws_url": ws_url,
@@ -145,12 +147,17 @@ WPP_CONFIG_METADATA = {
     "wpp_accounts": {
         "description": "多账号模式: 账号列表 (JSON 数组)",
         "type": "string",
-        "hint": '多账号时用。JSON 数组, 每元素: {"id":"xieyin","authcode":"xxx","allow_users":"","group_reply":"atbot","blacklist_groups":"","require_at_mention":false}。留空=单账号(wpp_auth_token)',
+        "hint": '多账号时用。JSON 数组, 每元素: {"id":"xieyin","authcode":"xxx","allow_users":"","block_users":"","group_reply":"atbot","blacklist_groups":"","require_at_mention":false}。留空=单账号(wpp_auth_token)',
     },
     "wpp_allow_users": {
         "description": "单账号模式: 白名单 wxid (逗号分隔)",
         "type": "string",
         "hint": "仅单账号时用。多账号的白名单在 wpp_accounts 每账号里配",
+    },
+    "wpp_block_users": {
+        "description": "单账号模式: 私聊黑名单 wxid (逗号分隔)",
+        "type": "string",
+        "hint": "全部放行模式下用它排除特定 wxid (私聊/群聊都生效)。公众号/微信团队/微信支付/服务通知等系统消息已内置静默, 无需填写",
     },
     "wpp_group_reply": {
         "description": "单账号模式: 群消息回复模式",
@@ -180,6 +187,7 @@ WPP_CONFIG_METADATA = {
         "wpp_auth_token": "",
         "wpp_accounts": "",
         "wpp_allow_users": "",
+        "wpp_block_users": "",
         "wpp_group_reply": "atbot",
         "wpp_ws_url": "",
         "wpp_webhook_enabled": False,
@@ -237,6 +245,7 @@ class WppPlatformAdapter(Platform):
                 allow_users=acfg.get("allow_users") or set(),
                 group_reply=acfg.get("group_reply", "atbot"),
                 blacklist_groups=acfg.get("blacklist_groups") or set(),
+                block_users=acfg.get("block_users") or set(),
                 require_at_mention=acfg.get("require_at_mention", False),
             )
             self.accounts.append(acct)

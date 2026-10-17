@@ -13,8 +13,10 @@
 import importlib
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 # 插件目录
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
@@ -25,6 +27,7 @@ mod = importlib.import_module("astrbot-plugin-wpp.wpp_adapter")
 WppPlatformAdapter = mod.WppPlatformAdapter
 _parse_accounts = mod._parse_accounts
 WppAccount = importlib.import_module("astrbot-plugin-wpp.wpp_account").WppAccount
+storage = importlib.import_module("astrbot-plugin-wpp.wpp_storage")
 
 
 class FakePlatform:
@@ -49,6 +52,7 @@ class TestParseAccounts(unittest.TestCase):
             "wpp_base_url": "http://127.0.0.1:18062",
             "wpp_auth_token": "token_xieyin",
             "wpp_allow_users": "u1,u2",
+            "wpp_block_users": "bad1,bad2",
             "wpp_group_reply": "atbot",
             "wpp_ws_url": "wss://x/ws/sync",
             "wpp_accounts": "",
@@ -58,6 +62,7 @@ class TestParseAccounts(unittest.TestCase):
         self.assertEqual(accounts[0]["id"], "wpp")
         self.assertEqual(accounts[0]["authcode"], "token_xieyin")
         self.assertEqual(accounts[0]["allow_users"], {"u1", "u2"})
+        self.assertEqual(accounts[0]["block_users"], {"bad1", "bad2"})
 
     def test_multi_account_parse(self):
         """多账号: wpp_accounts JSON 解析。"""
@@ -67,7 +72,7 @@ class TestParseAccounts(unittest.TestCase):
             "wpp_auth_token": "",
             "wpp_ws_url": "wss://x/ws/sync",
             "wpp_accounts": json.dumps([
-                {"id": "xieyin", "authcode": "tok1", "allow_users": "a1", "group_reply": "all"},
+                {"id": "xieyin", "authcode": "tok1", "allow_users": "a1", "block_users": "b1", "group_reply": "all"},
                 {"id": "yirong", "authcode": "tok2", "blacklist_groups": "g1"},
             ]),
         }
@@ -75,6 +80,7 @@ class TestParseAccounts(unittest.TestCase):
         self.assertEqual(len(accounts), 2)
         self.assertEqual(accounts[0]["id"], "xieyin")
         self.assertEqual(accounts[0]["authcode"], "tok1")
+        self.assertEqual(accounts[0]["block_users"], {"b1"})
         self.assertEqual(accounts[0]["group_reply"], "all")
         self.assertEqual(accounts[1]["id"], "yirong")
         self.assertEqual(accounts[1]["authcode"], "tok2")
@@ -124,6 +130,17 @@ class TestWppAccountIsolation(unittest.TestCase):
         self.assertIn("friendA", acct_a.allow_users)
         self.assertNotIn("friendA", acct_b.allow_users)
         self.assertIn("friendB", acct_b.allow_users)
+
+    def test_block_users_persisted(self):
+        """block_users 跟随账号配置落盘, 重启/热更新后仍生效。"""
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
+                acct = WppAccount(FakePlatform(), "acct_block", "tok", "http://x:1", "")
+                acct.block_users.add("wxid_bad")
+                acct.save_policy()
+                reloaded = WppAccount(FakePlatform(), "acct_block", "tok", "http://x:1", "")
+                self.assertIn("wxid_bad", reloaded.block_users)
+                self.assertFalse(reloaded.policy_snapshot().block_users == set())
 
     def test_platform_meta_id(self):
         """平台 meta().id 为实例 id。"""

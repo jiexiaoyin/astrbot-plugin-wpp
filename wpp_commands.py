@@ -1,7 +1,8 @@
 """filehelper 管理命令 (在「文件传输助手」里发指令管理当前账号的白名单/群策略)。
 
 命令注册表化: help 自动遍历注册表, 新命令只需加一行。
-所有命令只影响**本账号** (WppAccount 持有的 allow_users / blacklist_groups / group_reply)。
+所有命令只影响**本账号** (WppAccount 持有的 allow_users / block_users /
+blacklist_groups / group_reply)。
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ class FilehelperCommands:
         self._commands: list[tuple[str, str, Any]] = [
             ("/user add|del <wxid> [wxid...]", "私聊白名单增删 (批量)", self._user),
             ("/user list", "查看私聊白名单", self._user),
+            ("/block add|del|list <wxid> [wxid...]", "私聊黑名单 (全部放行模式下排除)", self._block),
             ("/group add|del <群ID> [群ID...]", "群白名单增删 (批量)", self._group),
             ("/group list", "查看群白名单", self._group),
             ("/blacklist add|del|list <群ID> [群ID...]", "黑名单群管理 (批量)", self._blacklist),
@@ -82,6 +84,47 @@ class FilehelperCommands:
             await reply(msg)
             return
         await reply("用法: /user add <wxid> [wxid...] | /user del <wxid> [wxid...] | /user list")
+
+    async def _block(self, args: list[str], reply) -> None:
+        """私聊黑名单: 全部放行模式下排除指定 wxid (群聊里也屏蔽该成员)。"""
+        acct = self.account
+        action = (args[0] if args else "").strip().lower()
+        targets = split_args(args[1:])
+        if action == "list" or (action == "" and not targets):
+            users = sorted(acct.block_users)
+            await reply(
+                f"🚫 私聊黑名单 ({len(users)}):\n"
+                + ("\n".join(f"- {u}" for u in users) if users else "(空)")
+            )
+            return
+        if action == "add" and targets:
+            added = [t for t in targets if t not in acct.block_users]
+            removed_from_wl = []
+            for t in targets:
+                acct.block_users.add(t)
+                if t in acct.allow_users:
+                    acct.allow_users.discard(t)
+                    removed_from_wl.append(t)
+            acct.save_policy()
+            note = f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
+            await reply(
+                f"✅ 已加入私聊黑名单: {', '.join(added) or '(均已存在)'}{note}\n"
+                f"当前 ({len(acct.block_users)}): {', '.join(sorted(acct.block_users))}"
+            )
+            return
+        if action == "del" and targets:
+            removed = [t for t in targets if t in acct.block_users]
+            missing = [t for t in targets if t not in acct.block_users]
+            for t in removed:
+                acct.block_users.discard(t)
+            acct.save_policy()
+            msg = f"✅ 已移出私聊黑名单: {', '.join(removed) or '(无)'}"
+            if missing:
+                msg += f"\n⚠️ 不在黑名单: {', '.join(missing)}"
+            msg += f"\n当前 ({len(acct.block_users)}): {', '.join(sorted(acct.block_users)) or '(空)'}"
+            await reply(msg)
+            return
+        await reply("用法: /block add <wxid> [wxid...] | /block del <wxid> [wxid...] | /block list")
 
     async def _group(self, args: list[str], reply) -> None:
         acct = self.account

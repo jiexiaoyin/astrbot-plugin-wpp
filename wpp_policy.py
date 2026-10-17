@@ -5,13 +5,17 @@
     (旧实现里 @ 任何群友都能放行)
   - 策略以 `PolicySnapshot` 传入, 便于单测
 
-判定顺序 (群聊):
+判定顺序:
+  0. 发送者在 block_users (私聊黑名单) → 拒绝 (私聊/群聊都生效)
+  群聊:
   1. 黑名单群 → 拒绝
   2. 白名单里存在群 ID, 且本群不在白名单 → 拒绝
   3. group_reply == none → 拒绝
   4. require_at_mention 且未 @ 机器人 → 拒绝
   5. group_reply == all → 放行
   6. atbot: 内容 @ 了机器人 (或 vendor 的 recipient_id 就是机器人) → 放行
+  私聊:
+  7. block_users 命中 → 拒绝; 空白名单=全部放行; 否则只放行白名单
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from .wpp_messages import mentioned, safe_str
 @dataclass
 class PolicySnapshot:
     allow_users: set[str] = field(default_factory=set)
+    block_users: set[str] = field(default_factory=set)
     blacklist_groups: set[str] = field(default_factory=set)
     group_reply: str = "atbot"
     require_at_mention: bool = False
@@ -39,6 +44,10 @@ def is_allowed(
     content: str,
     recipient_id: str = "",
 ) -> bool:
+    # 发送者黑名单: 私聊/群聊都生效 (群里屏蔽某个成员)
+    if from_wxid and from_wxid in policy.block_users:
+        return False
+
     if is_group:
         if chatroom_id and chatroom_id in policy.blacklist_groups:
             return False

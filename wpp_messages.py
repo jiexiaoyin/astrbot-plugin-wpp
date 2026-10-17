@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -28,8 +29,38 @@ MSG_TYPE_VOICE = 34
 MSG_TYPE_VIDEO = 43
 MSG_TYPE_EMOJI = 47
 MSG_TYPE_APP = 49
-MSG_TYPE_RELAY = 51
+MSG_TYPE_STATUS = 51
+MSG_TYPE_SYSTEM = 10000
 MSG_TYPE_REVOKE = 10002
+
+# 微信内置的系统/服务会话 (不是真人好友)。这些会话的消息**任何模式下都不应触发 AI**。
+# 已用 vendor /Friend/GetContractDetail 实测确认:
+#   weixin=微信团队, notifymessage=服务通知, filehelper=文件传输助手,
+#   weixinsrc=微信安全中心, tenpay=财付通, wechatpay=WeChat Payment,
+#   wxpayhelper=智慧商户服务助手, weixinpay=已注销支付号
+# wxpay=微信支付 / brandsessionholder=订阅号消息: 微信内部服务号, 不返回通讯录详情,
+# 但社区与协议侧长期使用这两个固定 username, 一并拦截。
+SYSTEM_SENDERS = frozenset({
+    "weixin",            # 微信团队
+    "wxpay",             # 微信支付
+    "weixinpay",         # 微信支付 (旧/已注销)
+    "tenpay",            # 财付通
+    "wechatpay",         # WeChat Payment
+    "wxpayhelper",       # 智慧商户服务助手
+    "notifymessage",     # 服务通知
+    "weixinsrc",         # 微信安全中心
+    "filehelper",        # 文件传输助手 (命令已在前面处理; 非命令不进 AI)
+    "brandsessionholder",  # 订阅号消息
+    "qqmail",            # QQ邮箱提醒
+    "weixinreminder",    # 语音提醒
+})
+
+# 微信原生支付类 appmsg（转账/红包）。只在**卡片**(msgType=49)上采信，
+# 绝不按纯文本里的"红包"二字判断 —— 群接龙文案常自带"红包"（历史事故）。
+PAYMENT_APPMSG_TYPES = frozenset({2000, 2001, 2002})
+_PAYMENT_CATEGORY_RE = re.compile(r"payment|transfer|pay", re.I)
+_PAYMENT_DESC_RE = re.compile(r"转账|收款|红包|transfer", re.I)
+_APPMSG_TYPE_RE = re.compile(r"<type>\s*(2000|2001|2002)\s*</type>", re.I)
 
 # vendor WS 事件类型白名单 (只处理消息事件)。
 # 其它类型 (friend_circle_update / contact_update / ...) 一律忽略。
@@ -244,6 +275,129 @@ def src_is_filehelper(src: dict) -> bool:
     )
 
 
+def src_msg_type(src: dict) -> int:
+    """vendor 消息类型 (v1 用 `type`, 旧 webhook 用 `msgType`)。"""
+    return safe_num(
+        src.get("msgType") or src.get("MsgType") or src.get("type") or src.get("msg_type"),
+        MSG_TYPE_TEXT,
+    )
+
+
+def _src_identity_ids(src: dict) -> list[str]:
+    """消息里所有可能承载会话 username 的字段 (sender/recipient/conversation)。"""
+    ids = [src_sender(src), src_recipient(src)]
+    for key in ("conversation_id", "chatroom_id", "chatroomId", "roomId", "peer_id"):
+        val = safe_str(src.get(key))
+        if val:
+            ids.append(val)
+    return ids
+
+
+def system_sender(src: dict) -> str:
+    """返回消息所属的微信系统/服务会话 id (非真人), 没有则返回空串。
+
+    公众号 (`gh_`) 与微信内置服务号 (微信团队/微信支付/服务通知/财付通/...)
+    都不是可对话的联系人。**不依赖 allow_users 模式** —— 即使"全部放行"也必须静默。
+    """
+    for ident in _src_identity_ids(src):
+        low = ident.strip().lower()
+        if not low:
+            continue
+        if low.startswith("gh_"):
+            return low
+        if low in SYSTEM_SENDERS:
+            return low
+    return ""
+
+
+def _app_payload(src: dict) -> dict:
+    for key in ("app", "appMsg", "appmsg"):
+        obj = src.get(key)
+        if isinstance(obj, dict):
+            return obj
+    return {}
+
+
+def is_payment_card(src: dict) -> bool:
+    """红包/转账/支付卡片 —— 静默，不触发 AI。
+
+    **只认卡片结构** (msgType=49 + app 元数据/XML)，不按正文"红包"关键词判断:
+    群接龙文案经常自带"红包"二字，按关键词会把正常接龙静默掉（wpp-hermes 09-27 事故）。
+    """
+    if src_msg_type(src) != MSG_TYPE_APP:
+        return False
+
+    app = _app_payload(src)
+    category = safe_str(app.get("category"))
+    if category and _PAYMENT_CATEGORY_RE.search(category):
+        return True
+    if category:
+        desc = safe_str(app.get("description"))
+        if desc and _PAYMENT_DESC_RE.search(desc):
+            return True
+
+    for key in ("type", "appmsg_type", "appmsgType"):
+        try:
+            if int(app.get(key)) in PAYMENT_APPMSG_TYPES:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    content = src_content(src)
+    if "<appmsg" in content[:500] and _APPMSG_TYPE_RE.search(content):
+        return True
+    # vendor 会把卡片正文译成固定短词；仅在卡片(49)上采信，纯文本消息不受影响
+    if content.strip() in ("微信红包", "[红包]", "微信转账", "[转账]"):
+        return True
+    return False
+
+
+def skip_reason(src: dict, self_wxid: str = "") -> str | None:
+    """消息是否应在进入 AstrBot 之前静默丢弃；返回原因 (供日志归因), 放行返回 None。
+
+    这里是**唯一判据** (to_astrbot_message / WppAccount 共用), 避免两处各写一份
+    "什么消息不算消息"而漂移。任何模式 (白名单/全部放行/群 all) 都先过这道门。
+    """
+    if not isinstance(src, dict):
+        return "invalid"
+
+    # ① 系统/服务会话 (公众号、微信团队、微信支付、服务通知、filehelper...)
+    sys_id = system_sender(src)
+    if sys_id:
+        return "official_account" if sys_id.startswith("gh_") else f"system:{sys_id}"
+
+    sender = src_sender(src)
+    if not sender:
+        return "no-sender"
+
+    # ② 自己发的 / 非入站 (防 vendor 回推自问自答)
+    if not src_is_incoming(src):
+        return "outgoing"
+    if self_wxid and sender == self_wxid:
+        return "self"
+
+    # ③ vendor 状态推送 / 微信系统消息 / 撤回
+    kind = safe_str(src.get("kind")).lower()
+    if kind in ("status", "system"):
+        return f"kind:{kind}"
+    msg_type = src_msg_type(src)
+    if msg_type == MSG_TYPE_STATUS:
+        return "status"
+    if msg_type == MSG_TYPE_SYSTEM:
+        return "system_msg"
+    if msg_type == MSG_TYPE_REVOKE:
+        return "revoke"
+
+    content = src_content(src)
+    if content[:200].lstrip().startswith("<sysmsg"):
+        return "sysmsg"
+
+    # ④ 红包/转账/支付卡片
+    if is_payment_card(src):
+        return "payment_card"
+    return None
+
+
 def mentioned(content: str, self_wxid: str, self_nickname: str) -> bool:
     """判断群消息是否 @ 了机器人。
 
@@ -308,22 +462,10 @@ def to_astrbot_message(
 
     返回 None 表示该消息不应进入 AstrBot (撤回/系统消息/空内容/非 incoming)。
     """
+    if skip_reason(src, self_wxid):
+        return None
     from_wxid = src_sender(src)
-    if not from_wxid:
-        return None
-    if from_wxid.startswith("gh_"):
-        return None
-    if not src_is_incoming(src):
-        return None
-    if self_wxid and from_wxid == self_wxid:
-        return None
-
-    msg_type = safe_num(
-        src.get("msgType") or src.get("MsgType") or src.get("type") or src.get("msg_type"),
-        MSG_TYPE_TEXT,
-    )
-    if msg_type == MSG_TYPE_REVOKE:
-        return None
+    msg_type = src_msg_type(src)
 
     chatroom_id = src_chatroom(src)
     is_group = bool(chatroom_id)
@@ -429,7 +571,7 @@ def to_astrbot_message(
             "compress_type": safe_num(vc.get("compress_type"), 0),
         }
 
-    elif msg_type in (MSG_TYPE_APP, MSG_TYPE_RELAY):
+    elif msg_type == MSG_TYPE_APP:
         if not content:
             return None
         abm.message_str = content
@@ -483,7 +625,7 @@ def _inject_at_component(
         return
     if not content or "@" not in content:
         return
-    if msg_type not in (MSG_TYPE_TEXT, MSG_TYPE_APP, MSG_TYPE_RELAY):
+    if msg_type not in (MSG_TYPE_TEXT, MSG_TYPE_APP):
         return
     self_id = self_wxid or abm.self_id
     if not self_id or not mentioned(content, self_id, self_nickname):
@@ -505,8 +647,11 @@ __all__ = [
     "MSG_TYPE_VIDEO",
     "MSG_TYPE_EMOJI",
     "MSG_TYPE_APP",
-    "MSG_TYPE_RELAY",
+    "MSG_TYPE_STATUS",
+    "MSG_TYPE_SYSTEM",
     "MSG_TYPE_REVOKE",
+    "SYSTEM_SENDERS",
+    "PAYMENT_APPMSG_TYPES",
     "MESSAGE_EVENT_TYPES",
     "safe_str",
     "safe_num",
@@ -521,8 +666,12 @@ __all__ = [
     "src_chatroom",
     "src_content",
     "src_msg_key",
+    "src_msg_type",
     "src_is_incoming",
     "src_is_filehelper",
+    "system_sender",
+    "is_payment_card",
+    "skip_reason",
     "mentioned",
     "build_reply_component",
     "to_astrbot_message",
