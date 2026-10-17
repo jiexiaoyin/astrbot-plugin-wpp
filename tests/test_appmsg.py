@@ -254,6 +254,17 @@ class TestCompat(unittest.TestCase):
         self.assertEqual(msgs.src_msg_type({"type": "voice"}), msgs.MSG_TYPE_VOICE)
         self.assertEqual(msgs.src_msg_type({"type": "app"}), msgs.MSG_TYPE_APP)
 
+    def test_self_id_is_bot_even_if_recipient_is_group(self):
+        src = {
+            "sender_id": "wxid_f",
+            "chatroom_id": "123@chatroom",
+            "recipient_id": "123@chatroom",
+            "content": "@小助手 你好",
+        }
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
+        self.assertEqual(abm.self_id, "wxid_bot")
+        self.assertEqual(abm.message[0].qq, "wxid_bot")
+
     def test_group_id_not_taken_from_sender_id(self):
         src = {"sender_id": "123@chatroom", "content": "hi"}
         self.assertEqual(msgs.src_chatroom(src), "")

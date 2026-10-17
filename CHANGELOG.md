@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.5.1 (2026-10-17) — self_id 修复 (群聊 @ 唤醒/心流兼容)
+
+### 修复
+- `AstrBotMessage.self_id` 改为优先使用机器人自己的 wxid，不再用
+  `recipient_id`。群消息的 `recipient_id` 可能是群 ID，若当作 self_id，
+  AstrBot 核心的 `At.qq == self_id` 唤醒判断会失效，心流等主动回复插件也无法
+  正确区分机器人与群友。
+- 新增对应测试，总计 71。
+
 ## v0.5.0 (2026-10-17) — 出站引用回复 / 链接卡片 / 位置 / AtAll
 
 ### 新增

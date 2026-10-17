@@ -553,7 +553,10 @@ def to_astrbot_message(
 
     abm = AstrBotMessage()
     abm.type = MessageType.GROUP_MESSAGE if is_group else MessageType.FRIEND_MESSAGE
-    abm.self_id = to_wxid or self_wxid
+    # 必须优先机器人自己的 wxid: 群消息的 recipient_id 可能是群 ID,
+    # 若用它当 self_id, 核心的 At/引用唤醒判断 (At.qq == self_id) 会失效,
+    # 心流等插件也无法正确区分"自己/群友"。
+    abm.self_id = self_wxid or to_wxid
     abm.message_id = msg_id or f"wpp-{ts}"
     abm.sender = MessageMember(
         user_id=from_wxid,
