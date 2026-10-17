@@ -253,7 +253,9 @@ class WppPlugin(Star):
         )
         if acct is None:
             return error_response("未找到 WPP 账号")
-        changed = False
+        # 先全部校验再落盘: 避免某个字段校验失败时, 前面的字段已经被
+        # 改到内存里却没有保存, 造成"页面提示失败但运行时策略已部分生效"。
+        updates = {}
         for field in (
             "allow_users",
             "block_users",
@@ -285,18 +287,17 @@ class WppPlugin(Star):
                         "block_users 是私聊黑名单；群 ID 请填到 blacklist_groups："
                         + ", ".join(bad[:5])
                     )
-            setattr(acct, field, items)
-            changed = True
+            updates[field] = items
         if "group_reply" in payload:
             mode = str(payload.get("group_reply", "") or "").strip()
             if mode not in ("atbot", "none", "all"):
                 return error_response("group_reply 只支持 atbot / none / all")
-            acct.group_reply = mode
-            changed = True
+            updates["group_reply"] = mode
         if "require_at_mention" in payload:
-            acct.require_at_mention = bool(payload.get("require_at_mention"))
-            changed = True
-        if changed:
+            updates["require_at_mention"] = bool(payload.get("require_at_mention"))
+        for field, value in updates.items():
+            setattr(acct, field, value)
+        if updates:
             acct.save_policy()
         if inst is not None:
             inst.sync_heartflow_whitelist("dashboard")

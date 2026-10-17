@@ -149,6 +149,19 @@ class TestPolicyApi(unittest.TestCase):
                 self.assertIn(field, body["message"])
                 self.assertEqual(getattr(acct, field), expected)
 
+    def test_update_is_atomic_on_validation_error(self):
+        acct = fake_account()
+        plugin = self._plugin(acct)
+        payload = {
+            "account_id": "wpp",
+            "allow_users": ["u2"],
+            "blacklist_groups": ["not-a-group"],
+        }
+        with patch.object(main_mod.request, "json", AsyncMock(return_value=payload)):
+            resp = main_mod.asyncio.run(plugin.web_policy_update())
+        self.assertEqual(json.loads(resp.body)["status"], "error")
+        self.assertEqual(acct.allow_users, {"u1", "123@chatroom"})
+
     def test_status_refresh_calls_adapter_and_returns_instances(self):
         acct = fake_account()
         inst = fake_instance(acct)
