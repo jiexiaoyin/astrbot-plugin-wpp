@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "display_name": "微信 WPP"
+  },
+  "pages": {
+    "console": {
+      "title": "WPP 控制台"
+    },
+    "diagnostics": {
+      "title": "WPP 账号诊断"
+    }
+  }
+}

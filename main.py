@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import re
 
 from astrbot import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -17,7 +18,9 @@ from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
 
 from .wpp_client import WppClient
+from .wpp_commands import plugin_version
 from .wpp_heartflow import configure as configure_heartflow_sync
+from .wpp_heartflow import resolve_heartflow_groups
 from .wpp_media import enrich_media
 
 # 触发平台适配器注册: AstrBot 加载插件目录是 namespace package,
@@ -61,6 +64,12 @@ class WppPlugin(Star):
             ["POST"],
             "立即同步 WPP 群白名单到 Heartflow",
         )
+        context.register_web_api(
+            f"/{PLUGIN_NAME}/status-refresh",
+            self.web_status_refresh,
+            ["POST"],
+            "刷新 WPP 账号在线状态",
+        )
 
     @filter.on_waiting_llm_request()
     async def wpp_lazy_media(self, event: AstrMessageEvent):
@@ -91,7 +100,7 @@ class WppPlugin(Star):
     async def web_account_info(self):
         """输入 X-Access-Token, 返回该 token 绑定的微信账号在线状态/wxid。
 
-        前端 Pages: pages/account-info/index.html
+        前端 Pages: pages/diagnostics/index.html
         """
         payload = await request.json(default={})
         payload = payload if isinstance(payload, dict) else {}
@@ -187,16 +196,36 @@ class WppPlugin(Star):
         }
 
     def _policy_instances(self) -> list[dict]:
-        return [
-            {
-                "id": getattr(inst, "instance_id", ""),
-                "heartflow_sync_enabled": bool(
-                    getattr(inst, "heartflow_sync_enabled", True)
-                ),
-                "accounts": [self._account_policy_view(a) for a in inst.accounts],
-            }
-            for inst in self._get_wpp_instances()
-        ]
+        instances = []
+        for inst in self._get_wpp_instances():
+            accounts = list(getattr(inst, "accounts", []) or [])
+            mode = str(
+                getattr(inst, "heartflow_whitelist_mode", "auto") or "auto"
+            )
+            try:
+                targets, rejected = resolve_heartflow_groups(
+                    accounts,
+                    getattr(inst, "heartflow_groups", set()) or set(),
+                    mode,
+                )
+            except Exception:  # noqa: BLE001
+                targets, rejected = set(), set()
+            instances.append(
+                {
+                    "id": getattr(inst, "instance_id", ""),
+                    "heartflow_sync_enabled": bool(
+                        getattr(inst, "heartflow_sync_enabled", True)
+                    ),
+                    "heartflow_mode": mode,
+                    "heartflow_custom_groups": sorted(
+                        str(g) for g in (getattr(inst, "heartflow_groups", set()) or set())
+                    ),
+                    "heartflow_target_groups": sorted(targets),
+                    "heartflow_rejected_groups": sorted(rejected),
+                    "accounts": [self._account_policy_view(a) for a in accounts],
+                }
+            )
+        return instances
 
     def _find_account(self, instance_id: str = "", account_id: str = ""):
         for inst in self._get_wpp_instances():
@@ -208,8 +237,12 @@ class WppPlugin(Star):
         return None, None
 
     async def web_policy_query(self):
-        instances = self._policy_instances()
-        return json_response({"instances": instances})
+        return json_response(
+            {
+                "version": plugin_version(),
+                "instances": self._policy_instances(),
+            }
+        )
 
     async def web_policy_update(self):
         payload = await request.json(default={})
@@ -231,7 +264,8 @@ class WppPlugin(Star):
                 continue
             value = payload.get(field)
             if isinstance(value, str):
-                value = value.replace("，", ",").split(",")
+                # 控制面板支持逗号/换行/分号分隔, 与 /help 的逗号写法兼容。
+                value = re.split(r"[\s,，;；]+", value)
             if not isinstance(value, (list, tuple, set)):
                 return error_response(f"{field} 必须是数组")
             setattr(acct, field, {str(v).strip() for v in value if str(v).strip()})
@@ -264,6 +298,43 @@ class WppPlugin(Star):
             inst.sync_heartflow_whitelist("dashboard")
             synced.append(getattr(inst, "instance_id", ""))
         return json_response({"ok": True, "synced": synced})
+
+    async def web_status_refresh(self):
+        """主动查询账号在线状态, 供控制面板「刷新状态」使用。
+
+        状态本身由适配器每 30s 刷新一次; 这里用于打开面板/排障时立即拉取,
+        不返回 authcode 等敏感配置。
+        """
+        payload = await request.json(default={})
+        payload = payload if isinstance(payload, dict) else {}
+        instance_id = str(payload.get("instance_id", "") or "").strip()
+        account_id = str(payload.get("account_id", "") or "").strip()
+        tasks = []
+        refreshed = []
+        for inst in self._get_wpp_instances():
+            if instance_id and getattr(inst, "instance_id", "") != instance_id:
+                continue
+            refresh = getattr(inst, "_refresh_account_status", None)
+            if not callable(refresh):
+                continue
+            for acct in getattr(inst, "accounts", []) or []:
+                if account_id and acct.account_id != account_id:
+                    continue
+                tasks.append(refresh(acct))
+                refreshed.append(
+                    {"instance_id": getattr(inst, "instance_id", ""),
+                     "account_id": acct.account_id}
+                )
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return json_response(
+            {
+                "ok": True,
+                "refreshed": refreshed,
+                "version": plugin_version(),
+                "instances": self._policy_instances(),
+            }
+        )
 
     def _get_wpp_instances(self) -> list:
         """返回所有已注册的 wpp 平台适配器实例。"""

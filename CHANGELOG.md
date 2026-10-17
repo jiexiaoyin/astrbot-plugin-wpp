@@ -1,5 +1,41 @@
 # Changelog
 
+## v0.8.0 (2026-10-17) — 控制面板重做
+
+### 新增
+- **WPP 控制台**（`pages/console`）整体重做：
+  - 顶部概览卡片：账号数、在线数、群白名单数、生效主动候选数、发送成功/失败；
+  - 账号卡片：在线状态、昵称/wxid、群白名单/生效主动/队列/发送统计、
+    最近发送错误提示；
+  - 编辑区按「私聊准入 / 群聊准入」分组，输入时实时计算并预览生效主动候选；
+  - 保存前校验群 ID 必须以 `@chatroom` 结尾，避免把群 ID 误填进私聊白名单；
+  - 保存后就地更新卡片、汇总和 Heartflow 目标，不刷新整个页面；
+  - 有未保存修改时，「刷新状态」只更新状态/统计并保留表单；
+  - 响应式布局 + 深色主题，跟随 Dashboard 主题。
+- **WPP 账号诊断**（`pages/diagnostics`）重做：展示已配置账号的在线状态，
+  保留 X-Access-Token 单账号诊断（昵称/wxid/地区/签名），Token 不落盘。
+- **状态刷新 API**：`POST /astrbot-plugin-wpp/status-refresh`，按实例/账号
+  立即调用适配器 `_refresh_account_status`，返回最新策略视图。
+- **Heartflow 同步视图**：控制台显示 `auto`/`custom` 模式、实际目标群数、
+  被群白名单拒绝的群，便于排查白名单不变量。
+- **页面 i18n**：新增 `.astrbot-plugin/i18n/zh-CN.json` 与 `en-US.json`，
+  Dashboard 页面标题显示「WPP 控制台」「WPP 账号诊断」。
+- **控制台作为插件首页**：页面目录改为 `pages/console` + `pages/diagnostics`，
+  按字母排序时控制台在前，Dashboard「打开插件UI界面」直接进入控制台。
+
+### 变更
+- `/policy` Web API 响应新增 `version`、`heartflow_mode`、
+  `heartflow_custom_groups`、`heartflow_target_groups`、
+  `heartflow_rejected_groups`；仍无顶层 `data` 字段。
+- 策略更新接口的字符串列表支持逗号、换行、分号分隔（控制面板直接提交数组，
+  手写 API 调用更宽容）。
+
+### 测试
+- 新增策略查询版本/状态、状态刷新、实例 Heartflow 视图、换行/分号列表用例；
+  测试总数 155。
+- 使用 Playwright 对控制台/诊断页做真实浏览器冒烟：卡片渲染、实时预览、
+  保存回写、群 ID 校验、状态刷新、Heartflow 同步、深浅色与移动端布局。
+
 ## v0.7.4 (2026-10-17) — /help 改为微信纯文本
 
 ### 修复

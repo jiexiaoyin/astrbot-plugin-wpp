@@ -1,6 +1,7 @@
 """v0.7.0: Dashboard 策略查询/更新 (纯对象, 不启动 AstrBot)。"""
 
 import importlib
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -25,7 +26,17 @@ def fake_account():
         require_at_mention=False,
         lazy_media=True,
         save_policy=lambda: None,
-        stats={"queue_size": 0, "dedup_size": 0, "send": {"sent": 1, "failed": 0}},
+        stats={
+            "status": {
+                "online": True,
+                "wxid": "wxid_bot",
+                "nickname": "小助理",
+                "message": "在线",
+            },
+            "queue_size": 0,
+            "dedup_size": 0,
+            "send": {"sent": 1, "failed": 0},
+        },
     )
     return acct
 
@@ -34,8 +45,11 @@ def fake_instance(acct):
     inst = SimpleNamespace(
         instance_id="wpp",
         heartflow_sync_enabled=True,
+        heartflow_whitelist_mode="custom",
+        heartflow_groups={"123@chatroom"},
         accounts=[acct],
         sync_heartflow_whitelist=lambda reason="": None,
+        _refresh_account_status=AsyncMock(),
     )
     inst.meta = lambda: SimpleNamespace(name="wpp")
     return inst
@@ -60,7 +74,23 @@ class TestPolicyApi(unittest.TestCase):
         self.assertEqual(view["stats"]["send"]["sent"], 1)
         instances = plugin._policy_instances()
         self.assertEqual(instances[0]["id"], "wpp")
+        self.assertEqual(instances[0]["heartflow_mode"], "custom")
+        self.assertEqual(
+            instances[0]["heartflow_target_groups"], ["123@chatroom"]
+        )
+        self.assertEqual(instances[0]["heartflow_rejected_groups"], [])
         self.assertNotIn("data", instances[0])
+
+    def test_policy_query_exposes_version_and_status(self):
+        plugin = self._plugin(fake_account())
+        resp = main_mod.asyncio.run(plugin.web_policy_query())
+        self.assertTrue(resp)
+        body = json.loads(resp.body)
+        self.assertNotIn("data", body)
+        self.assertNotEqual(body["version"], "dev")
+        status = body["instances"][0]["accounts"][0]["stats"]["status"]
+        self.assertTrue(status["online"])
+        self.assertEqual(status["wxid"], "wxid_bot")
 
     def test_update_allow_users_and_group_reply(self):
         acct = fake_account()
@@ -78,6 +108,19 @@ class TestPolicyApi(unittest.TestCase):
         self.assertEqual(acct.group_reply, "all")
         self.assertEqual(acct.proactive_groups, {"123@chatroom", "456@chatroom"})
 
+    def test_update_accepts_newline_and_semicolon_lists(self):
+        acct = fake_account()
+        plugin = self._plugin(acct)
+        payload = {
+            "account_id": "wpp",
+            "allow_users": "u1\n123@chatroom;456@chatroom",
+        }
+        with patch.object(main_mod.request, "json", AsyncMock(return_value=payload)):
+            main_mod.asyncio.run(plugin.web_policy_update())
+        self.assertEqual(
+            acct.allow_users, {"u1", "123@chatroom", "456@chatroom"}
+        )
+
     def test_update_rejects_invalid_group_reply(self):
         acct = fake_account()
         plugin = self._plugin(acct)
@@ -85,6 +128,22 @@ class TestPolicyApi(unittest.TestCase):
         with patch.object(main_mod.request, "json", AsyncMock(return_value=payload)):
             main_mod.asyncio.run(plugin.web_policy_update())
         self.assertEqual(acct.group_reply, "atbot")
+
+    def test_status_refresh_calls_adapter_and_returns_instances(self):
+        acct = fake_account()
+        inst = fake_instance(acct)
+        plugin = object.__new__(main_mod.WppPlugin)
+        plugin.context = SimpleNamespace(
+            platform_manager=SimpleNamespace(platform_insts=[inst])
+        )
+        with patch.object(main_mod.request, "json", AsyncMock(return_value={})):
+            resp = main_mod.asyncio.run(plugin.web_status_refresh())
+        self.assertTrue(resp)
+        inst._refresh_account_status.assert_awaited_once_with(acct)
+        body = json.loads(resp.body)
+        self.assertNotIn("data", body)
+        self.assertEqual(body["refreshed"][0]["account_id"], "wpp")
+        self.assertEqual(body["instances"][0]["id"], "wpp")
 
 
 if __name__ == "__main__":

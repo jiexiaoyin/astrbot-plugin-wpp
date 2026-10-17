@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "display_name": "WeChat WPP"
+  },
+  "pages": {
+    "console": {
+      "title": "WPP Console"
+    },
+    "diagnostics": {
+      "title": "WPP Account Diagnostics"
+    }
+  }
+}

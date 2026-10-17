@@ -136,9 +136,22 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
 
 ### 🖥 运维体验
-- **账号信息页面**：Dashboard 里查昵称/wxid/在线状态
-- **策略管理页面**：Dashboard → WPP → 策略管理，查看/修改每个账号的白名单、
-  群策略、主动候选群，并一键同步 Heartflow
+- **WPP 控制台**（Dashboard → 插件页面 → WPP 控制台）：
+  - 顶部概览：账号数、在线数、群白名单、生效主动候选、发送成功/失败；
+  - 账号卡片：在线徽标、昵称/wxid、队列、发送统计、最近错误；
+  - 编辑策略：私聊/群白名单、私聊/群黑名单、显式主动候选、群消息模式、
+    是否必须 @；输入时实时预览生效主动候选；
+  - 保存前校验群 ID（必须是 `@chatroom`），保存后立即落盘并同步 Heartflow；
+  - 「刷新状态」立即向 vendor 查询在线状态；有未保存修改时只刷新状态、
+    保留表单；
+  - 响应式布局 + 深色主题，适配 Dashboard 主题切换。
+  - 入口：Dashboard → **插件** → 已安装插件 → `astrbot-plugin-wpp` →
+    **打开插件UI界面**（打开的是第一页 `console`，即控制台）；
+    也可进入插件详情 → 行为 → 页面条目 → 「打开」。
+  - 控制台管理**运行时策略**；vendor 地址/authcode、Heartflow 模式等仍在
+    Dashboard → 平台适配器 → 微信 WPP 配置中修改。
+- **WPP 账号诊断**：查看已配置账号在线状态，或用 X-Access-Token 查询
+  昵称/wxid/地区/签名；Token 仅用于本次请求，不落盘。
 - **在线状态卡片**：平台状态实时显示（多账号聚合）
 - **动态面板地址**：UI 显示实际配置的 vendor 地址（不硬编码）
 - **发送统计**：`WppAccount.stats["send"]` 暴露成功/失败/连续失败/最后错误；
@@ -238,8 +251,9 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 | `wpp_client.py` | WPP vendor HTTP/WS API 封装 (retry + 超时) |
 | `wpp_event.py` | 消息事件 (重写 send 真正发送到微信) |
 | `tests/` | 单元测试 (pytest, 在 AstrBot 容器内运行) |
-| `pages/account-info/` | Dashboard 账号信息页面 |
-| `pages/policy/` | Dashboard 策略管理页面 (白名单/主动候选/Heartflow 同步) |
+| `pages/console/` | WPP 控制台 (策略编辑/生效预览/Heartflow 同步) |
+| `pages/diagnostics/` | WPP 账号诊断 (在线状态 + Token 查询) |
+| `.astrbot-plugin/i18n/` | Dashboard 页面标题与显示名 (zh-CN / en-US) |
 | `logo.png` | 插件 + 平台适配器图标 |
 
 运行时数据（白名单、去重状态）写在 AstrBot 标准插件数据目录：

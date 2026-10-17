@@ -8,6 +8,9 @@ PLUGIN_DIR="/AstrBot/data/plugins/astrbot-plugin-wpp"
 
 echo "==> [1/4] 拷贝插件到容器 $CONTAINER"
 docker exec "$CONTAINER" sh -c "mkdir -p $PLUGIN_DIR"
+# pages / i18n 是纯源码目录; 先清理以移除已改名/删除的页面, 避免旧 Pages
+# 残留后仍被 Dashboard 自动发现。运行时数据不在此列。
+docker exec "$CONTAINER" sh -c "rm -rf '$PLUGIN_DIR/pages' '$PLUGIN_DIR/.astrbot-plugin'"
 docker cp "$PLUGIN_SRC"/. "$CONTAINER":"$PLUGIN_DIR"/
 
 echo "==> [2/4] 检查依赖 aiohttp + websockets"

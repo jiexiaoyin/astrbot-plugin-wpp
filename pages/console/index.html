@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WPP 控制台</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f6f9;
+        --panel: #ffffff;
+        --panel-2: #f8fafc;
+        --text: #17202a;
+        --muted: #667085;
+        --line: #e4e8ee;
+        --brand: #2f6bff;
+        --brand-strong: #1d4ed8;
+        --brand-soft: #eaf0ff;
+        --ok: #0f9d58;
+        --ok-soft: #e8f7ef;
+        --warn: #b7791f;
+        --warn-soft: #fff7e6;
+        --err: #d92d20;
+        --err-soft: #fef0ef;
+        --shadow: 0 8px 24px rgba(16, 24, 40, 0.06);
+      }
+      [data-theme="dark"] {
+        color-scheme: dark;
+        --bg: #0e1116;
+        --panel: #161b23;
+        --panel-2: #1b222c;
+        --text: #e8edf5;
+        --muted: #93a0b4;
+        --line: #2a3443;
+        --brand: #5b8cff;
+        --brand-strong: #7aa2ff;
+        --brand-soft: #1b2b4d;
+        --ok: #3ddc97;
+        --ok-soft: #123328;
+        --warn: #f5c26b;
+        --warn-soft: #3a2c14;
+        --err: #ff7b72;
+        --err-soft: #3d1b1a;
+        --shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      body {
+        min-height: 100vh;
+        padding: 26px 22px 48px;
+        background:
+          radial-gradient(900px 420px at 100% -10%, var(--brand-soft), transparent 60%),
+          var(--bg);
+        color: var(--text);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .shell { max-width: 1180px; margin: 0 auto; }
+      .hero {
+        display: flex; align-items: flex-end; justify-content: space-between;
+        gap: 20px; flex-wrap: wrap; margin-bottom: 20px;
+      }
+      .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
+      .logo {
+        width: 46px; height: 46px; border-radius: 15px; flex: none;
+        display: grid; place-items: center;
+        background: linear-gradient(135deg, #2f6bff, #7c3aed);
+        box-shadow: 0 10px 22px rgba(47, 107, 255, 0.28);
+        color: #fff; font-size: 20px; font-weight: 750;
+      }
+      h1 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; }
+      .sub { margin-top: 3px; color: var(--muted); font-size: 12.5px; }
+      .sub b { color: var(--text); font-weight: 600; }
+      .actions { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+      button, .btn-link {
+        appearance: none; border: 1px solid transparent; border-radius: 9px;
+        padding: 8px 15px; font: inherit; font-size: 13px; font-weight: 600;
+        cursor: pointer; text-decoration: none; white-space: nowrap;
+        transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+      }
+      button { background: var(--brand); color: #fff; }
+      button:hover { background: var(--brand-strong); }
+      button:disabled { opacity: 0.55; cursor: not-allowed; }
+      button.ghost, .btn-link {
+        background: var(--panel); color: var(--text); border-color: var(--line);
+      }
+      button.ghost:hover, .btn-link:hover { background: var(--panel-2); border-color: var(--muted); }
+      .summary {
+        display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 12px; margin-bottom: 24px;
+      }
+      .summary-card {
+        background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+        padding: 14px 16px; box-shadow: var(--shadow); min-width: 0;
+      }
+      .summary-card .k { color: var(--muted); font-size: 11.5px; letter-spacing: 0.03em; }
+      .summary-card .v {
+        margin-top: 2px; font-size: 23px; font-weight: 720; line-height: 1.15;
+        font-variant-numeric: tabular-nums;
+      }
+      .summary-card .v small { font-size: 12px; font-weight: 500; color: var(--muted); }
+      .summary-card .v small.bad { color: var(--err); }
+      .summary-card.good .v { color: var(--ok); }
+      .summary-card.bad .v { color: var(--err); }
+      .instance { margin-bottom: 28px; }
+      .instance-head {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; flex-wrap: wrap; margin: 0 2px 11px;
+      }
+      .instance-name { display: flex; align-items: center; gap: 9px; min-width: 0; }
+      .instance-name b { font-size: 15px; }
+      .tag {
+        display: inline-flex; align-items: center; gap: 5px;
+        border: 1px solid var(--line); background: var(--panel);
+        color: var(--muted); border-radius: 999px; padding: 2px 9px;
+        font-size: 11.5px; white-space: nowrap;
+      }
+      .tag.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+      .tag.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+      .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+      .dot.bad { background: var(--err); box-shadow: 0 0 0 3px var(--err-soft); }
+      .dot.wait { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+      .accounts {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+        gap: 16px; align-items: start;
+      }
+      .account-card {
+        background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+        box-shadow: var(--shadow); overflow: hidden;
+      }
+      .account-card.dirty { border-color: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
+      .account-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 18px 0; }
+      .avatar {
+        width: 42px; height: 42px; border-radius: 13px; flex: none;
+        display: grid; place-items: center; color: #fff; font-size: 17px; font-weight: 700;
+        background: linear-gradient(135deg, #2f6bff, #7c3aed);
+      }
+      .identity { flex: 1; min-width: 0; }
+      .identity .name {
+        font-size: 15.5px; font-weight: 680; line-height: 1.35;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .identity .sub {
+        margin-top: 2px; font-size: 11.5px; color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .status {
+        display: inline-flex; align-items: center; gap: 6px; flex: none;
+        border-radius: 999px; padding: 3px 9px; font-size: 11.5px; font-weight: 600;
+        background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+      }
+      .status.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+      .status.bad { background: var(--err-soft); color: var(--err); border-color: transparent; }
+      .status.wait { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+      .notice {
+        margin: 12px 18px 0; padding: 9px 11px; border-radius: 9px;
+        background: var(--warn-soft); color: var(--warn); font-size: 12px;
+      }
+      .metrics {
+        display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 1px; margin-top: 16px; background: var(--line);
+        border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+      }
+      .metric { background: var(--panel); padding: 11px 8px; text-align: center; min-width: 0; }
+      .metric b {
+        display: block; font-size: 17px; line-height: 1.2; font-variant-numeric: tabular-nums;
+      }
+      .metric span {
+        display: block; margin-top: 1px; color: var(--muted); font-size: 10.5px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .metric .bad { color: var(--err); }
+      .strip { padding: 12px 18px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+      .strip-head {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 8px; margin-bottom: 7px; font-size: 11.5px; color: var(--muted);
+      }
+      .strip-head b { color: var(--text); font-size: 12px; font-weight: 600; }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chip {
+        border: 1px solid var(--line); background: var(--panel); color: var(--text);
+        border-radius: 7px; padding: 2px 7px; font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        overflow-wrap: anywhere;
+      }
+      .chip.more { color: var(--muted); font-family: inherit; }
+      .strip .none { color: var(--muted); font-size: 11.5px; }
+      .editor { border-top: 0; }
+      .editor > summary {
+        list-style: none; cursor: pointer; user-select: none;
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        padding: 12px 18px; color: var(--text); font-size: 12.5px; font-weight: 600;
+      }
+      .editor > summary::-webkit-details-marker { display: none; }
+      .editor > summary .hint { font-weight: 500; color: var(--muted); font-size: 11.5px; }
+      .editor > summary .chev {
+        display: inline-block; width: 7px; height: 7px; flex: none;
+        border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+        transform: rotate(45deg); transition: transform 0.15s ease; margin: 0 3px 3px 4px;
+      }
+      .editor[open] > summary { border-bottom: 1px solid var(--line); background: var(--panel-2); }
+      .editor[open] > summary .chev { transform: rotate(225deg); margin-bottom: -2px; }
+      .form { padding: 4px 18px 0; }
+      .section { padding: 13px 0 2px; }
+      .section + .section { border-top: 1px dashed var(--line); }
+      .section-title {
+        margin-bottom: 9px; color: var(--muted); font-size: 11px; font-weight: 700;
+        letter-spacing: 0.08em; text-transform: uppercase;
+      }
+      .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+      .field { display: block; min-width: 0; }
+      .field.wide { grid-column: 1 / -1; }
+      .field > span {
+        display: flex; align-items: center; justify-content: space-between; gap: 6px;
+        margin-bottom: 5px; color: var(--text); font-size: 12px; font-weight: 600;
+      }
+      .field > span em { color: var(--muted); font-style: normal; font-weight: 500; font-size: 10.5px; }
+      textarea, select {
+        width: 100%; border: 1px solid var(--line); border-radius: 8px;
+        background: var(--panel); color: var(--text); font: inherit; font-size: 12.5px;
+        padding: 7px 9px; outline: none;
+      }
+      textarea { min-height: 64px; resize: vertical; font-family: ui-monospace, SFMono-Regular,
+        Menlo, Consolas, monospace; line-height: 1.55; }
+      textarea:focus, select:focus {
+        border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft);
+      }
+      .hint { margin-top: 4px; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+      .switch {
+        display: flex; align-items: flex-start; gap: 9px; padding: 8px 10px;
+        border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+        cursor: pointer;
+      }
+      .switch input { margin: 2px 0 0; accent-color: var(--brand); }
+      .switch b { display: block; font-size: 12px; font-weight: 600; }
+      .switch small { display: block; margin-top: 1px; color: var(--muted); font-size: 10.5px; }
+      .savebar {
+        display: flex; align-items: center; justify-content: space-between; gap: 10px;
+        margin: 13px -18px 0; padding: 12px 18px; background: var(--panel-2);
+        border-top: 1px solid var(--line);
+      }
+      .msg { color: var(--muted); font-size: 11.5px; min-width: 0; overflow-wrap: anywhere; }
+      .msg.ok { color: var(--ok); }
+      .msg.err { color: var(--err); }
+      .empty, .loading {
+        background: var(--panel); border: 1px dashed var(--line); border-radius: 16px;
+        padding: 34px 20px; text-align: center; color: var(--muted);
+      }
+      .empty b { display: block; margin-bottom: 4px; color: var(--text); font-size: 15px; }
+      .skeleton { height: 150px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line); }
+      .skeleton + .skeleton { margin-top: 14px; }
+      .toast {
+        position: fixed; left: 50%; bottom: 22px; z-index: 20;
+        transform: translate(-50%, 16px); opacity: 0; pointer-events: none;
+        max-width: min(520px, calc(100vw - 32px)); padding: 10px 16px; border-radius: 10px;
+        background: var(--text); color: var(--panel); font-size: 12.5px; font-weight: 550;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+        transition: opacity 0.18s ease, transform 0.18s ease;
+      }
+      .toast.show { opacity: 1; transform: translate(-50%, 0); }
+      .toast.err { background: var(--err); color: #fff; }
+      @media (max-width: 900px) {
+        .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      }
+      @media (max-width: 640px) {
+        body { padding: 18px 12px 40px; }
+        .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .summary-card:last-child { grid-column: 1 / -1; }
+        .accounts { grid-template-columns: 1fr; }
+        .grid { grid-template-columns: 1fr; }
+        .actions { width: 100%; }
+        .actions button, .actions .btn-link { flex: 1; text-align: center; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div class="brand">
+          <div class="logo">W</div>
+          <div>
+            <h1>WPP 控制台</h1>
+            <div class="sub">账号准入 · 主动候选 · Heartflow 同步 · 版本 <b id="version">—</b></div>
+          </div>
+        </div>
+        <div class="actions">
+          <a class="btn-link" id="gotoDiagnostics" href="#">账号诊断</a>
+          <button class="ghost" id="refreshBtn" type="button">刷新状态</button>
+          <button id="syncBtn" type="button">同步 Heartflow</button>
+        </div>
+      </header>
+
+      <section class="summary" id="summary" aria-label="概览">
+        <div class="summary-card"><div class="k">账号</div><div class="v" id="sumAccounts">—</div></div>
+        <div class="summary-card" id="sumOnlineCard"><div class="k">在线</div><div class="v" id="sumOnline">—</div></div>
+        <div class="summary-card"><div class="k">群白名单</div><div class="v" id="sumGroups">—</div></div>
+        <div class="summary-card"><div class="k">生效主动候选</div><div class="v" id="sumProactive">—</div></div>
+        <div class="summary-card" id="sumSendCard"><div class="k">发送成功 / 失败</div><div class="v" id="sumSend">—</div></div>
+      </section>
+
+      <main id="list" aria-live="polite">
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+      </main>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script type="module">
+      const bridge = window.AstrBotPluginPage;
+      const list = document.getElementById("list");
+      const refreshBtn = document.getElementById("refreshBtn");
+      const syncBtn = document.getElementById("syncBtn");
+      const toastEl = document.getElementById("toast");
+
+      const state = { version: "", instances: [] };
+      const dirty = new Set();
+      const openEditors = new Set();
+      let toastTimer = 0;
+
+      await bridge.ready();
+
+      // 静态相对链接会被 Pages 的资产重写器当作本页资产处理; 运行时替换
+      // 页面内容路由的最后一段, 沿用 Dashboard 登录态跳到兄弟页面。
+      const pagePath = location.pathname.replace(/\/+$/, "").split("/");
+      pagePath[pagePath.length - 1] = "diagnostics";
+      const themeParam = new URLSearchParams(location.search).get("theme");
+      document.getElementById("gotoDiagnostics").href =
+        pagePath.join("/") + "/" + (themeParam ? `?theme=${encodeURIComponent(themeParam)}` : "");
+
+      const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      })[c]);
+
+      const isGroup = (v) => String(v || "").trim().endsWith("@chatroom");
+      const parseList = (text) => [...new Set(
+        String(text || "").split(/[\s,，;；]+/).map((s) => s.trim()).filter(Boolean)
+      )];
+      const listText = (arr) => (Array.isArray(arr) ? arr.join("\n") : "");
+      const keyOf = (instanceId, accountId) => `${instanceId}/${accountId}`;
+
+      function effectiveFor(account) {
+        const groups = account.auto_proactive_groups || [];
+        const explicit = account.proactive_groups || [];
+        const blacklist = new Set(account.blacklist_groups || []);
+        const base = groups.length ? groups : explicit;
+        if (account.group_reply === "none") return [];
+        return base.filter((g) => !blacklist.has(g));
+      }
+
+      function accountGroups(account) {
+        return (account.allow_users || []).filter(isGroup);
+      }
+
+      function statusInfo(account) {
+        const status = account.stats?.status || {};
+        if (status.online === true) return { cls: "ok", text: "在线", status };
+        if (status.online === false) return { cls: "bad", text: "离线", status };
+        return { cls: "wait", text: "查询中", status };
+      }
+
+      function summarySend(account) {
+        const send = account.stats?.send || {};
+        return { sent: Number(send.sent || 0), failed: Number(send.failed || 0) };
+      }
+
+      function renderInstance(inst) {
+        const accounts = inst.accounts || [];
+        const targets = heartflowTargets(inst).targets;
+        const rejected = heartflowTargets(inst).rejected;
+        const syncTag = inst.heartflow_sync_enabled
+          ? `<span class="tag ok"><span class="dot ok"></span>Heartflow 同步开启</span>`
+          : `<span class="tag">Heartflow 同步关闭</span>`;
+        const modeTag = `<span class="tag">模式 ${esc(inst.heartflow_mode || "auto")} · 目标 ${targets.length} 群</span>`;
+        const rejectedTag = rejected.length
+          ? `<span class="tag warn" title="${esc(rejected.join("\n"))}">${rejected.length} 个群被白名单拒绝</span>`
+          : "";
+        return `
+          <section class="instance" data-instance="${esc(inst.id)}">
+            <div class="instance-head">
+              <div class="instance-name">
+                <b>实例 ${esc(inst.id)}</b>
+                ${syncTag}${modeTag}${rejectedTag}
+              </div>
+              <span class="tag">${accounts.length} 个账号</span>
+            </div>
+            <div class="accounts">
+              ${accounts.length
+                ? accounts.map((a) => renderAccountCard(inst, a)).join("")
+                : `<div class="empty"><b>暂无账号</b>请先在平台适配器配置中登录微信账号。</div>`}
+            </div>
+          </section>`;
+      }
+
+      function renderAccountCard(inst, account) {
+        const key = keyOf(inst.id, account.id);
+        const st = statusInfo(account);
+        const groups = accountGroups(account);
+        const privateUsers = (account.allow_users || []).filter((v) => !isGroup(v));
+        const effective = effectiveFor(account);
+        const send = summarySend(account);
+        const name = st.status.nickname || account.id;
+        const avatar = String(name || "W").trim().charAt(0).toUpperCase() || "W";
+        const wxid = st.status.wxid || "未获取";
+        const autoCount = groups.length;
+        const explicitCount = (account.proactive_groups || []).length;
+        const chips = effective.slice(0, 5).map((g) => `<span class="chip">${esc(g)}</span>`).join("");
+        const more = effective.length > 5
+          ? `<span class="chip more" title="${esc(effective.join("\n"))}">+${effective.length - 5}</span>`
+          : "";
+        const statusTitle = st.status.message ? ` title="${esc(st.status.message)}"` : "";
+        const lastError = account.stats?.send?.last_error;
+        const notice = lastError
+          ? `<div class="notice">最近发送失败：${esc(lastError)}</div>`
+          : "";
+        return `
+          <article class="account-card" data-key="${esc(key)}"
+            data-instance="${esc(inst.id)}" data-account="${esc(account.id)}">
+            <div class="account-head">
+              <div class="avatar">${esc(avatar)}</div>
+              <div class="identity">
+                <div class="name">${esc(name)}</div>
+                <div class="sub">账号 ${esc(account.id)} · wxid ${esc(wxid)}</div>
+              </div>
+              <span class="status ${st.cls}"${statusTitle}>
+                <span class="dot ${st.cls}"></span>${st.text}
+              </span>
+            </div>
+            ${notice}
+            <div class="metrics">
+              <div class="metric"><b>${groups.length}</b><span>群白名单</span></div>
+              <div class="metric"><b>${effective.length}</b><span>生效主动</span></div>
+              <div class="metric" data-metric="queue"><b>${esc(account.stats?.queue_size ?? 0)}</b><span>队列</span></div>
+              <div class="metric" data-metric="send">
+                <b>${send.sent}</b>
+                <span>${send.failed ? `<span class="bad">失败 ${send.failed}</span>` : "发送成功"}</span>
+              </div>
+            </div>
+            <div class="strip">
+              <div class="strip-head">
+                <b>生效主动候选</b>
+                <span>自动 ${autoCount} · 显式 ${explicitCount}</span>
+              </div>
+              <div class="chips">${chips}${more}${effective.length ? "" : `<span class="none">暂无生效群${account.group_reply === "none" ? "（群模式 none）" : ""}</span>`}</div>
+            </div>
+            <details class="editor" ${openEditors.has(key) ? "open" : ""}>
+              <summary>
+                <span>编辑策略</span>
+                <span class="hint">私聊 ${privateUsers.length} · 群 ${groups.length} · ${esc(account.group_reply)}${account.require_at_mention ? " · 必须@" : ""}</span>
+                <span class="chev"></span>
+              </summary>
+              <div class="form">
+                <div class="section">
+                  <div class="section-title">私聊准入</div>
+                  <div class="grid">
+                    <label class="field">
+                      <span>私聊白名单 <em>${privateUsers.length} 人</em></span>
+                      <textarea data-field="private_users" placeholder="wxid，逗号或换行分隔">${esc(listText(privateUsers))}</textarea>
+                      <div class="hint">留空 = 私聊全部放行（黑名单除外）。</div>
+                    </label>
+                    <label class="field">
+                      <span>私聊黑名单 <em>${(account.block_users || []).length} 人</em></span>
+                      <textarea data-field="block_users" placeholder="wxid，逗号或换行分隔">${esc(listText(account.block_users))}</textarea>
+                      <div class="hint">群内该成员的消息也会被屏蔽。</div>
+                    </label>
+                  </div>
+                </div>
+                <div class="section">
+                  <div class="section-title">群聊准入</div>
+                  <div class="grid">
+                    <label class="field">
+                      <span>群白名单 <em>自动主动候选</em></span>
+                      <textarea data-field="group_whitelist" placeholder="群ID@chatroom，逗号或换行分隔">${esc(listText(groups))}</textarea>
+                      <div class="hint">群白名单只负责放行；这些群会自动纳入主动候选和 Heartflow 同步。</div>
+                    </label>
+                    <label class="field">
+                      <span>群黑名单 <em>${(account.blacklist_groups || []).length} 个</em></span>
+                      <textarea data-field="blacklist_groups" placeholder="群ID@chatroom，逗号或换行分隔">${esc(listText(account.blacklist_groups))}</textarea>
+                      <div class="hint">黑名单优先于白名单，与群白名单重复时该群不会生效。</div>
+                    </label>
+                    <label class="field wide">
+                      <span>显式主动候选 <em>仅群白名单为空时补充</em></span>
+                      <textarea data-field="proactive_groups" placeholder="群ID@chatroom，逗号或换行分隔">${esc(listText(account.proactive_groups))}</textarea>
+                      <div class="hint">已配置群白名单时，以群白名单为准，此处额外群不会放行。</div>
+                    </label>
+                    <label class="field">
+                      <span>群消息模式</span>
+                      <select data-field="group_reply">
+                        <option value="atbot" ${account.group_reply === "atbot" ? "selected" : ""}>atbot — 只放行 @ 我或主动候选</option>
+                        <option value="all" ${account.group_reply === "all" ? "selected" : ""}>all — 观察放行所有群消息</option>
+                        <option value="none" ${account.group_reply === "none" ? "selected" : ""}>none — 忽略所有群消息</option>
+                      </select>
+                      <div class="hint">all 也只是准入，不强制回复；是否接话由 Heartflow / active_reply 决定。</div>
+                    </label>
+                    <label class="switch">
+                      <input type="checkbox" data-field="require_at_mention" ${account.require_at_mention ? "checked" : ""} />
+                      <span>
+                        <b>群聊必须 @ 才放行</b>
+                        <small>开启后，未 @ 的主动候选也不会进入 AstrBot。</small>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+                <div class="savebar">
+                  <span class="msg">修改后保存会立即落盘并同步 Heartflow。</span>
+                  <button class="save" type="button">保存策略</button>
+                </div>
+              </div>
+            </details>
+          </article>`;
+      }
+
+      function heartflowTargets(inst) {
+        const accounts = inst.accounts || [];
+        const whitelist = new Set(accounts.flatMap(accountGroups));
+        const explicit = new Set(accounts.flatMap((a) => a.proactive_groups || []));
+        const custom = new Set(inst.heartflow_custom_groups || []);
+        const target = new Set(inst.heartflow_mode === "custom" ? custom : [...whitelist, ...explicit]);
+        const rejected = new Set();
+        if (whitelist.size) {
+          for (const g of target) {
+            if (!whitelist.has(g)) rejected.add(g);
+          }
+          for (const g of rejected) target.delete(g);
+        }
+        return { targets: [...target].sort(), rejected: [...rejected].sort() };
+      }
+
+      function renderAll() {
+        document.getElementById("version").textContent = state.version || "dev";
+        if (!state.instances.length) {
+          list.innerHTML = `<div class="empty"><b>未找到 WPP 平台实例</b>请先在 AstrBot 平台适配器中添加「微信 WPP」。</div>`;
+          updateSummary();
+          return;
+        }
+        list.innerHTML = state.instances.map(renderInstance).join("");
+        updateSummary();
+      }
+
+      function updateSummary() {
+        const accounts = state.instances.flatMap((i) => i.accounts || []);
+        const online = accounts.filter((a) => a.stats?.status?.online === true).length;
+        const unknown = accounts.filter((a) => {
+          const v = a.stats?.status?.online;
+          return v !== true && v !== false;
+        }).length;
+        const groups = accounts.reduce((n, a) => n + accountGroups(a).length, 0);
+        const proactive = accounts.reduce((n, a) => n + effectiveFor(a).length, 0);
+        const send = accounts.reduce((acc, a) => {
+          const s = summarySend(a);
+          acc.sent += s.sent; acc.failed += s.failed; return acc;
+        }, { sent: 0, failed: 0 });
+
+        document.getElementById("sumAccounts").textContent = accounts.length;
+        document.getElementById("sumOnline").innerHTML =
+          `${online}<small> / ${accounts.length}${unknown ? ` · ${unknown} 查询中` : ""}</small>`;
+        document.getElementById("sumGroups").textContent = groups;
+        document.getElementById("sumProactive").textContent = proactive;
+        document.getElementById("sumSend").innerHTML =
+          `${send.sent}${send.failed ? `<small class="bad"> / ${send.failed}</small>` : ""}`;
+        document.getElementById("sumOnlineCard").className =
+          `summary-card ${online === accounts.length && accounts.length ? "good" : (online ? "" : "bad")}`;
+        document.getElementById("sumSendCard").className =
+          `summary-card ${send.failed ? "bad" : ""}`;
+      }
+
+      function markDirty(card) {
+        dirty.add(card.dataset.key);
+        card.classList.add("dirty");
+      }
+
+      function values(card) {
+        const get = (name) => card.querySelector(`[data-field="${name}"]`);
+        const checked = get("require_at_mention")?.checked ?? false;
+        return {
+          privateUsers: parseList(get("private_users")?.value),
+          blockUsers: parseList(get("block_users")?.value),
+          groups: parseList(get("group_whitelist")?.value),
+          blacklist: parseList(get("blacklist_groups")?.value),
+          proactive: parseList(get("proactive_groups")?.value),
+          mode: get("group_reply")?.value || "atbot",
+          requireAt: checked,
+        };
+      }
+
+      function updatePreview(card) {
+        const v = values(card);
+        const base = v.groups.length ? v.groups : v.proactive;
+        const blacklist = new Set(v.blacklist);
+        const effective = v.mode === "none" ? [] : base.filter((g) => !blacklist.has(g));
+        const metrics = card.querySelectorAll(".metric b");
+        if (metrics[0]) metrics[0].textContent = v.groups.length;
+        if (metrics[1]) metrics[1].textContent = effective.length;
+        const strip = card.querySelector(".strip");
+        if (strip) {
+          const head = strip.querySelector(".strip-head span");
+          if (head) head.textContent = `自动 ${v.groups.length} · 显式 ${v.proactive.length}`;
+          const chips = strip.querySelector(".chips");
+          if (chips) {
+            const shown = effective.slice(0, 5)
+              .map((g) => `<span class="chip">${esc(g)}</span>`).join("");
+            const more = effective.length > 5
+              ? `<span class="chip more" title="${esc(effective.join("\n"))}">+${effective.length - 5}</span>`
+              : "";
+            chips.innerHTML = shown + more ||
+              `<span class="none">暂无生效群${v.mode === "none" ? "（群模式 none）" : ""}</span>`;
+          }
+        }
+        const hint = card.querySelector(".editor > summary .hint");
+        if (hint) {
+          hint.textContent = `私聊 ${v.privateUsers.length} · 群 ${v.groups.length} · ${v.mode}${v.requireAt ? " · 必须@" : ""}`;
+        }
+      }
+
+      function validate(v) {
+        const errors = [];
+        const privateGroups = v.privateUsers.filter(isGroup);
+        if (privateGroups.length) errors.push(`私聊白名单包含群 ID：${privateGroups.join(", ")}`);
+        const badGroups = v.groups.filter((g) => !isGroup(g));
+        if (badGroups.length) errors.push(`群白名单包含非群 ID：${badGroups.join(", ")}`);
+        const badBlacklist = v.blacklist.filter((g) => !isGroup(g));
+        if (badBlacklist.length) errors.push(`群黑名单包含非群 ID：${badBlacklist.join(", ")}`);
+        const badProactive = v.proactive.filter((g) => !isGroup(g));
+        if (badProactive.length) errors.push(`主动候选包含非群 ID：${badProactive.join(", ")}`);
+        if (v.privateUsers.some(isGroup)) {
+          errors.push("群 ID 请填到「群白名单」，不要填在私聊白名单。");
+        }
+        return [...new Set(errors)];
+      }
+
+      async function saveCard(btn) {
+        const card = btn.closest(".account-card");
+        if (!card) return;
+        const msg = card.querySelector(".savebar .msg");
+        const v = values(card);
+        const errors = validate(v);
+        if (errors.length) {
+          msg.className = "msg err";
+          msg.textContent = errors[0];
+          return;
+        }
+        const payload = {
+          instance_id: card.dataset.instance,
+          account_id: card.dataset.account,
+          allow_users: [...v.privateUsers, ...v.groups],
+          block_users: v.blockUsers,
+          blacklist_groups: v.blacklist,
+          proactive_groups: v.proactive,
+          group_reply: v.mode,
+          require_at_mention: v.requireAt,
+        };
+        btn.disabled = true;
+        msg.className = "msg";
+        msg.textContent = "保存中…";
+        try {
+          const resp = await bridge.apiPost("policy/update", payload);
+          if (resp?.error) throw new Error(resp.message || resp.error);
+          const inst = state.instances.find((i) => i.id === card.dataset.instance);
+          const idx = inst?.accounts?.findIndex((a) => a.id === card.dataset.account) ?? -1;
+          if (inst && idx >= 0 && resp?.account) {
+            inst.accounts[idx] = resp.account;
+            const wasOpen = card.querySelector("details")?.open;
+            if (wasOpen) openEditors.add(card.dataset.key);
+            const holder = document.createElement("div");
+            holder.innerHTML = renderAccountCard(inst, resp.account);
+            const fresh = holder.firstElementChild;
+            card.replaceWith(fresh);
+            if (wasOpen) fresh.querySelector("details").open = true;
+          } else {
+            card.classList.remove("dirty");
+          }
+          dirty.delete(card.dataset.key);
+          updateSummary();
+          updateInstanceTags();
+          toast("策略已保存，Heartflow 白名单已同步");
+        } catch (e) {
+          msg.className = "msg err";
+          msg.textContent = "保存失败：" + (e?.message || String(e));
+        } finally {
+          btn.disabled = false;
+        }
+      }
+
+      function updateInstanceTags() {
+        for (const inst of state.instances) {
+          const section = list.querySelector(`.instance[data-instance="${CSS.escape(inst.id)}"]`);
+          if (!section) continue;
+          const { targets, rejected } = heartflowTargets(inst);
+          const modeTag = section.querySelector(".instance-name .tag:nth-of-type(2)");
+          if (modeTag) modeTag.textContent = `模式 ${inst.heartflow_mode || "auto"} · 目标 ${targets.length} 群`;
+          let warn = section.querySelector(".instance-name .tag.warn");
+          if (rejected.length) {
+            if (!warn) {
+              warn = document.createElement("span");
+              warn.className = "tag warn";
+              section.querySelector(".instance-name").appendChild(warn);
+            }
+            warn.textContent = `${rejected.length} 个群被白名单拒绝`;
+            warn.title = rejected.join("\n");
+          } else if (warn) {
+            warn.remove();
+          }
+        }
+      }
+
+      function toast(text, isError = false) {
+        clearTimeout(toastTimer);
+        toastEl.textContent = text;
+        toastEl.className = `toast show${isError ? " err" : ""}`;
+        toastTimer = setTimeout(() => { toastEl.className = "toast"; }, 3200);
+      }
+
+      async function post(route, body = {}) {
+        const resp = await bridge.apiPost(route, body);
+        if (resp?.error) throw new Error(resp.message || resp.error);
+        return resp || {};
+      }
+
+      function patchStatus(instances) {
+        const oldByKey = new Map(
+          state.instances.flatMap((i) => (i.accounts || []).map((a) => [keyOf(i.id, a.id), a]))
+        );
+        state.instances = instances;
+        for (const inst of instances) {
+          for (const account of inst.accounts || []) {
+            const key = keyOf(inst.id, account.id);
+            const card = list.querySelector(`.account-card[data-key="${CSS.escape(key)}"]`);
+            if (!card) continue;
+            const previous = oldByKey.get(key) || {};
+            const st = statusInfo(account);
+            const badge = card.querySelector(".account-head .status");
+            if (badge) {
+              badge.className = `status ${st.cls}`;
+              badge.innerHTML = `<span class="dot ${st.cls}"></span>${st.text}`;
+              if (st.status.message) badge.title = st.status.message;
+            }
+            const name = card.querySelector(".identity .name");
+            if (name && st.status.nickname) name.textContent = st.status.nickname;
+            const sub = card.querySelector(".identity .sub");
+            if (sub) {
+              sub.textContent = `账号 ${account.id} · wxid ${st.status.wxid || "未获取"}`;
+            }
+            const metrics = card.querySelectorAll(".metric b");
+            if (metrics[2]) metrics[2].textContent = account.stats?.queue_size ?? 0;
+            const send = summarySend(account);
+            if (metrics[3]) metrics[3].textContent = send.sent;
+            const sendLabel = card.querySelector('[data-metric="send"] span');
+            if (sendLabel) {
+              sendLabel.innerHTML = send.failed
+                ? `<span class="bad">失败 ${send.failed}</span>`
+                : "发送成功";
+            }
+            const notice = card.querySelector(".notice");
+            if (!notice && account.stats?.send?.last_error) {
+              const div = document.createElement("div");
+              div.className = "notice";
+              div.textContent = `最近发送失败：${account.stats.send.last_error}`;
+              card.querySelector(".account-head").after(div);
+            }
+            if (previous.group_reply !== account.group_reply) {
+              // 外部命令改了策略: 保留表单时只更新字段, 不覆盖未保存内容。
+              const select = card.querySelector('[data-field="group_reply"]');
+              if (select && !dirty.has(key)) select.value = account.group_reply;
+            }
+          }
+        }
+        updateSummary();
+      }
+
+      async function loadPolicy() {
+        try {
+          const resp = await post("policy");
+          state.version = resp.version || "dev";
+          state.instances = resp.instances || [];
+          renderAll();
+        } catch (e) {
+          list.innerHTML = `<div class="empty"><b>加载失败</b>${esc(e?.message || e)}</div>`;
+          toast("加载失败：" + (e?.message || e), true);
+        }
+      }
+
+      list.addEventListener("click", (event) => {
+        const save = event.target.closest(".save");
+        if (save) saveCard(save);
+      });
+      list.addEventListener("input", (event) => {
+        const card = event.target.closest(".account-card");
+        if (!card) return;
+        markDirty(card);
+        updatePreview(card);
+      });
+      list.addEventListener("change", (event) => {
+        const card = event.target.closest(".account-card");
+        if (!card) return;
+        markDirty(card);
+        updatePreview(card);
+      });
+      list.addEventListener("toggle", (event) => {
+        const details = event.target;
+        const card = details.closest(".account-card");
+        if (!card) return;
+        if (details.open) openEditors.add(card.dataset.key);
+        else openEditors.delete(card.dataset.key);
+      }, true);
+
+      refreshBtn.addEventListener("click", async () => {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = "刷新中…";
+        try {
+          const resp = await post("status-refresh");
+          state.version = resp.version || state.version;
+          if (dirty.size) {
+            patchStatus(resp.instances || []);
+            toast("状态已刷新；有未保存的修改，表单已保留");
+          } else {
+            state.instances = resp.instances || [];
+            renderAll();
+            toast("账号状态已刷新");
+          }
+        } catch (e) {
+          toast("刷新失败：" + (e?.message || e), true);
+        } finally {
+          refreshBtn.disabled = false;
+          refreshBtn.textContent = "刷新状态";
+        }
+      });
+
+      syncBtn.addEventListener("click", async () => {
+        if (dirty.size) {
+          toast("有未保存的策略修改，请先保存再同步 Heartflow", true);
+          return;
+        }
+        syncBtn.disabled = true;
+        syncBtn.textContent = "同步中…";
+        try {
+          const resp = await post("heartflow-sync");
+          const names = resp.synced || [];
+          toast(names.length ? `Heartflow 已同步：${names.join(", ")}` : "没有可同步的 WPP 实例");
+        } catch (e) {
+          toast("同步失败：" + (e?.message || e), true);
+        } finally {
+          syncBtn.disabled = false;
+          syncBtn.textContent = "同步 Heartflow";
+        }
+      });
+
+      loadPolicy();
+    </script>
+  </body>
+</html>
