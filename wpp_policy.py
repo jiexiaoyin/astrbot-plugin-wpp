@@ -43,6 +43,7 @@ def is_allowed(
     chatroom_id: str,
     content: str,
     recipient_id: str = "",
+    at_list: list[str] | None = None,
 ) -> bool:
     # 发送者黑名单: 私聊/群聊都生效 (群里屏蔽某个成员)
     if from_wxid and from_wxid in policy.block_users:
@@ -65,16 +66,12 @@ def is_allowed(
 
         self_wxid = safe_str(policy.self_wxid)
         self_nickname = safe_str(policy.self_nickname)
-        at_me = mentioned(content or "", self_wxid, self_nickname)
+        at_me = mentioned(content or "", self_wxid, self_nickname, at_list)
 
         if policy.require_at_mention and not at_me:
             return False
 
         if policy.group_reply == "all":
-            return True
-
-        # atbot: vendor 的 recipient_id 就是机器人 (再配合 @ 判断)
-        if recipient_id and self_wxid and recipient_id == self_wxid and "@" in (content or ""):
             return True
         return at_me
 

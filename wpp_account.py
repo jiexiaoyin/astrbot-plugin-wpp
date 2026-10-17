@@ -32,6 +32,7 @@ from .wpp_media import enrich_media
 from .wpp_messages import (
     extract_all_msg_src,
     is_message_payload,
+    parse_at_list,
     safe_str,
     src_chatroom,
     src_content,
@@ -259,6 +260,7 @@ class WppAccount:
         chatroom_id = src_chatroom(src)
         content = src_content(src)
         recipient_id = src_recipient(src)
+        at_list = parse_at_list(src)
         is_group = bool(chatroom_id)
 
         # 去重: 在处理入口记录, 避免同一消息因重连/重推被处理两次
@@ -299,6 +301,7 @@ class WppAccount:
             chatroom_id,
             content,
             recipient_id,
+            at_list,
         ):
             self._filtered_since_report += 1
             logger.debug(

@@ -13,7 +13,7 @@ import uuid
 from typing import Any
 
 from astrbot import logger
-from astrbot.api.message_components import File, Image, Plain, Reply, Video
+from astrbot.api.message_components import File, Image, Plain, Record, Video
 from astrbot.api.platform import AstrBotMessage
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
@@ -50,8 +50,12 @@ def _skill_hint(ext: str) -> str:
 
 
 def _non_media_prefix(msg: AstrBotMessage) -> list[Any]:
-    """保留 Reply 等非媒体组件 (媒体组件会被重建)。"""
-    return [c for c in (msg.message or []) if isinstance(c, Reply)]
+    """保留 Reply/At 等非媒体组件 (媒体组件和占位 Plain 会被重建)。"""
+    return [
+        c
+        for c in (msg.message or [])
+        if not isinstance(c, (Plain, Image, File, Video, Record))
+    ]
 
 
 async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
@@ -66,13 +70,16 @@ async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
             try:
                 with open(path, "rb") as f:
                     msg.message = prefix + [Image.fromBytes(f.read())]
+                msg.message_str = "[图片]"
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[WPP] 读取下载图片失败: {e}")
                 msg.message = prefix + [Plain("[图片下载失败]")]
+                msg.message_str = "[图片下载失败]"
             finally:
                 _unlink(path)
         else:
             msg.message = prefix + [Plain("[图片下载失败]")]
+            msg.message_str = "[图片下载失败]"
 
     file_meta = getattr(msg, "_wpp_file_meta", None)
     if file_meta and file_meta.get("attach_id"):
@@ -89,15 +96,20 @@ async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
                     f.write(data)
                 temp_files.append(path)
                 hint = _skill_hint(_safe_ext(fname))
+                msg.message_str = f"[文件] {fname}"
                 msg.message = _non_media_prefix(msg) + [
                     Plain(f"[文件] {fname}{hint}"),
                     File(name=fname, file=path),
                 ]
             else:
                 logger.warning(f"[WPP] 文件下载失败: {file_meta.get('filename')}")
-                msg.message = _non_media_prefix(msg) + [Plain(f"[文件] {file_meta.get('filename', '')} (下载失败)")]
+                msg.message_str = f"[文件] {file_meta.get('filename', '')} (下载失败)"
+                msg.message = _non_media_prefix(msg) + [
+                    Plain(f"[文件] {file_meta.get('filename', '')} (下载失败)")
+                ]
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[WPP] 文件下载异常: {e}")
+            msg.message_str = "[文件] (下载失败)"
             msg.message = _non_media_prefix(msg) + [Plain("[文件] (下载失败)")]
 
     video_meta = getattr(msg, "_wpp_video_meta", None)
@@ -114,15 +126,18 @@ async def enrich_media(api: WppClient, msg: AstrBotMessage) -> list[str]:
                 with open(path, "wb") as f:
                     f.write(data)
                 temp_files.append(path)
+                msg.message_str = "[视频]"
                 msg.message = _non_media_prefix(msg) + [
                     Plain(f"[视频] {len(data)} bytes"),
                     Video.fromFileSystem(path),
                 ]
             else:
                 logger.warning("[WPP] 视频下载失败")
+                msg.message_str = "[视频下载失败]"
                 msg.message = _non_media_prefix(msg) + [Plain("[视频] (下载失败)")]
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[WPP] 视频下载异常: {e}")
+            msg.message_str = "[视频下载失败]"
             msg.message = _non_media_prefix(msg) + [Plain("[视频] (下载失败)")]
 
     return temp_files

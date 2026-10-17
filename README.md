@@ -56,9 +56,14 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 |---|---|---|
 | 文本 | 直接收发 | 最基础的对话 |
 | 图片 | CDN 完整下载 | `/Tools/CdnDownloadImage` 完整大图注入 AI |
-| 语音 | vendor 转写 | 自带 `voice.transcript`（微信官方），**无需 STT** |
+| 语音 | vendor 转写 | 自带 `voice.transcript`（微信官方）；缺失时占位 `[语音]` |
 | 文件 | 下载 + AI 读取 | `DownloadFileBinary` → `File` 组件，AI 可读 Excel/PDF |
 | 视频 | 分片下载 | `DownloadVideo` 分片 → `Video` 组件 |
+| 链接/小程序 | 结构化摘要 | `[链接]` / `[小程序]`：标题 + 描述 + URL/页面路径，**不传原始 XML** |
+| 合并转发/接龙 | 条目化 | `[合并转发]` 逐条发送人+内容；`[接龙]` 保留正文 |
+| 位置/名片 | 结构化摘要 | `[位置] 名称+经纬度`；`[名片] 昵称+wxid` |
+| 引用回复 | 原生 `Reply` 组件 | 被引用内容进入 AI 上下文 |
+| 支付/系统卡片 | 静默 | 红包/转账/公众号/服务通知等不触发 AI（任何模式） |
 
 ### 🛡 完善的接入能力
 - **系统消息静默（内置，任何模式生效）**：公众号（`gh_`）、微信团队、微信支付、服务通知、财付通、微信安全中心、订阅号消息等系统会话，以及状态/系统/撤回消息、红包/转账卡片，都不会触发 AI
@@ -115,6 +120,7 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 | `wpp_adapter.py` | 平台适配器 (账号管理器 + 账号解析 + 生命周期 + 发送路由) |
 | `wpp_account.py` | WppAccount 类 (单账号: WS + 有界队列/worker + 白名单 + 去重) |
 | `wpp_messages.py` | vendor 消息解析/转换 (纯函数, 含非消息事件过滤) |
+| `wpp_appmsg.py` | appmsg/XML 卡片结构化解析 (链接/小程序/位置/名片/合并转发/接龙) |
 | `wpp_policy.py` | 白名单/群回复策略 (纯函数) |
 | `wpp_media.py` | 图片/文件/视频下载 + 消息链富化 |
 | `wpp_send.py` | 出站消息链发送 + 长文本分片 |

@@ -21,17 +21,43 @@ from typing import Any
 from astrbot.api.message_components import At, File, Plain, Reply
 from astrbot.api.platform import AstrBotMessage, Group, MessageMember, MessageType
 
+from . import wpp_appmsg as appmsg
+
 # WPP vendor 消息类型 (WeChat MsgType)
 MSG_TYPE_TEXT = 1
 MSG_TYPE_IMAGE = 3
 MSG_TYPE_FILE = 6
 MSG_TYPE_VOICE = 34
+MSG_TYPE_CONTACT = 42
 MSG_TYPE_VIDEO = 43
 MSG_TYPE_EMOJI = 47
+MSG_TYPE_LOCATION = 48
 MSG_TYPE_APP = 49
 MSG_TYPE_STATUS = 51
 MSG_TYPE_SYSTEM = 10000
 MSG_TYPE_REVOKE = 10002
+
+# 旧版/部分 vendor 用字符串表示消息类型
+_MSG_TYPE_NAMES = {
+    "text": MSG_TYPE_TEXT,
+    "image": MSG_TYPE_IMAGE,
+    "file": MSG_TYPE_FILE,
+    "voice": MSG_TYPE_VOICE,
+    "audio": MSG_TYPE_VOICE,
+    "contact": MSG_TYPE_CONTACT,
+    "card": MSG_TYPE_CONTACT,
+    "video": MSG_TYPE_VIDEO,
+    "emoji": MSG_TYPE_EMOJI,
+    "sticker": MSG_TYPE_EMOJI,
+    "location": MSG_TYPE_LOCATION,
+    "app": MSG_TYPE_APP,
+    "link": MSG_TYPE_APP,
+    "miniprogram": MSG_TYPE_APP,
+    "mini_program": MSG_TYPE_APP,
+    "system": MSG_TYPE_SYSTEM,
+    "revoke": MSG_TYPE_REVOKE,
+    "status": MSG_TYPE_STATUS,
+}
 
 # 微信内置的系统/服务会话 (不是真人好友)。这些会话的消息**任何模式下都不应触发 AI**。
 # 已用 vendor /Friend/GetContractDetail 实测确认:
@@ -53,14 +79,25 @@ SYSTEM_SENDERS = frozenset({
     "brandsessionholder",  # 订阅号消息
     "qqmail",            # QQ邮箱提醒
     "weixinreminder",    # 语音提醒
+    "fmessage",          # 好友请求 / 系统好友
+    "mphelper",          # 公众平台助手
+    "newsapp",           # 腾讯新闻 / 系统资讯
+    "medianote",         # 语音记事本
+    "floatbottle",       # 漂流瓶
+    "weixinlianbo",      # 微信连播
 })
 
 # 微信原生支付类 appmsg（转账/红包）。只在**卡片**(msgType=49)上采信，
 # 绝不按纯文本里的"红包"二字判断 —— 群接龙文案常自带"红包"（历史事故）。
 PAYMENT_APPMSG_TYPES = frozenset({2000, 2001, 2002})
-_PAYMENT_CATEGORY_RE = re.compile(r"payment|transfer|pay", re.I)
-_PAYMENT_DESC_RE = re.compile(r"转账|收款|红包|transfer", re.I)
-_APPMSG_TYPE_RE = re.compile(r"<type>\s*(2000|2001|2002)\s*</type>", re.I)
+_PAYMENT_CATEGORY_RE = re.compile(r"payment|transfer|hongbao|redpacket|pay", re.I)
+# 只认“整句就是支付文案”的描述，避免把“红包活动/领红包”这类链接卡片误杀
+_PAYMENT_DESC_RE = re.compile(
+    r"^(?:微信)?(?:红包|转账|收款)(?:[\d.]+\s*元)?$"
+    r"|^收到(?:转账|红包)"
+    r"|^\[(?:红包|转账)\]$",
+    re.I,
+)
 
 # vendor WS 事件类型白名单 (只处理消息事件)。
 # 其它类型 (friend_circle_update / contact_update / ...) 一律忽略。
@@ -229,8 +266,9 @@ def src_chatroom(src: dict) -> str:
     )
     if chatroom:
         return chatroom
-    # vendor v1: conversation_id / recipient_id / sender_id 中任一以 @chatroom 结尾
-    for key in ("conversation_id", "chatroom_id", "recipient_id", "sender_id"):
+    # vendor v1: conversation_id / chatroom_id / recipient_id / peer_id 中任一以 @chatroom 结尾。
+    # 不要用 sender_id: 极少数推送会把群 ID 放在 sender_id，若据此建群会把发送者误标成群。
+    for key in ("conversation_id", "chatroom_id", "recipient_id", "peer_id"):
         val = safe_str(src.get(key))
         if val.endswith("@chatroom"):
             return val
@@ -263,8 +301,10 @@ def src_msg_key(src: dict) -> str:
 
 
 def src_is_incoming(src: dict) -> bool:
-    direction = safe_str(src.get("direction"))
-    return not direction or direction in ("incoming", "1")
+    direction = safe_str(src.get("direction")).lower()
+    if not direction:
+        return True
+    return direction in ("incoming", "in", "recv", "received", "1", "true")
 
 
 def src_is_filehelper(src: dict) -> bool:
@@ -276,11 +316,24 @@ def src_is_filehelper(src: dict) -> bool:
 
 
 def src_msg_type(src: dict) -> int:
-    """vendor 消息类型 (v1 用 `type`, 旧 webhook 用 `msgType`)。"""
-    return safe_num(
-        src.get("msgType") or src.get("MsgType") or src.get("type") or src.get("msg_type"),
-        MSG_TYPE_TEXT,
+    """vendor 消息类型 (v1 用 `type`, 旧 webhook 用 `msgType`)。
+
+    兼容字符串类型 (`"image"` / `"voice"` 等) —— 部分 vendor 变体会这样推。
+    """
+    raw = (
+        src.get("msgType")
+        or src.get("MsgType")
+        or src.get("type")
+        or src.get("msg_type")
     )
+    if raw is None or safe_str(raw) == "":
+        # 部分 vendor 变体只给 `kind` ("app"/"image"/"voice"...), 没有数字类型
+        raw = src.get("kind")
+    if isinstance(raw, str):
+        name = raw.strip().lower()
+        if name in _MSG_TYPE_NAMES:
+            return _MSG_TYPE_NAMES[name]
+    return safe_num(raw, MSG_TYPE_TEXT)
 
 
 def _src_identity_ids(src: dict) -> list[str]:
@@ -310,14 +363,6 @@ def system_sender(src: dict) -> str:
     return ""
 
 
-def _app_payload(src: dict) -> dict:
-    for key in ("app", "appMsg", "appmsg"):
-        obj = src.get(key)
-        if isinstance(obj, dict):
-            return obj
-    return {}
-
-
 def is_payment_card(src: dict) -> bool:
     """红包/转账/支付卡片 —— 静默，不触发 AI。
 
@@ -327,27 +372,28 @@ def is_payment_card(src: dict) -> bool:
     if src_msg_type(src) != MSG_TYPE_APP:
         return False
 
-    app = _app_payload(src)
-    category = safe_str(app.get("category"))
+    info = appmsg.parse_appmsg(src)
+    category = safe_str(info.get("category"))
     if category and _PAYMENT_CATEGORY_RE.search(category):
         return True
-    if category:
-        desc = safe_str(app.get("description"))
-        if desc and _PAYMENT_DESC_RE.search(desc):
+
+    if info.get("type") in PAYMENT_APPMSG_TYPES:
+        return True
+
+    # vendor 私有 type 字符串 (如 "hongbao")
+    raw_type = src.get("type")
+    if isinstance(raw_type, str) and re.search(r"hongbao|redpacket", raw_type, re.I):
+        return True
+
+    # 结构缺失时的兜底: 描述必须“整句就是支付文案”，且不能是接龙/链接/小程序
+    desc = safe_str(info.get("desc") or info.get("title"))
+    if desc and _PAYMENT_DESC_RE.search(desc) and not appmsg.is_relay(info):
+        if not info.get("url") and not info.get("mini_program") and not info.get("quote"):
             return True
 
-    for key in ("type", "appmsg_type", "appmsgType"):
-        try:
-            if int(app.get(key)) in PAYMENT_APPMSG_TYPES:
-                return True
-        except (TypeError, ValueError):
-            pass
-
-    content = src_content(src)
-    if "<appmsg" in content[:500] and _APPMSG_TYPE_RE.search(content):
-        return True
     # vendor 会把卡片正文译成固定短词；仅在卡片(49)上采信，纯文本消息不受影响
-    if content.strip() in ("微信红包", "[红包]", "微信转账", "[转账]"):
+    content = src_content(src).strip()
+    if content in ("微信红包", "[红包]", "微信转账", "[转账]"):
         return True
     return False
 
@@ -389,7 +435,7 @@ def skip_reason(src: dict, self_wxid: str = "") -> str | None:
         return "revoke"
 
     content = src_content(src)
-    if content[:200].lstrip().startswith("<sysmsg"):
+    if appmsg.is_sysmsg(content):
         return "sysmsg"
 
     # ④ 红包/转账/支付卡片
@@ -398,14 +444,25 @@ def skip_reason(src: dict, self_wxid: str = "") -> str | None:
     return None
 
 
-def mentioned(content: str, self_wxid: str, self_nickname: str) -> bool:
+def mentioned(
+    content: str,
+    self_wxid: str,
+    self_nickname: str,
+    at_list: list[str] | None = None,
+) -> bool:
     """判断群消息是否 @ 了机器人。
 
-    兼容微信实际推送的几种形态:
+    优先采信结构化的 @ 列表 (vendor 的 at_user_list / `<atuserlist>`)，
+    没有再回退到文本启发式:
       - `@nickname\\u2005你好` / `@wxid 你好`
       - 旧版 `wxid@chatroom` 形式
       - 仅昵称出现 (部分 vendor 会去掉 @ 前缀)
     """
+    if at_list:
+        if self_wxid and self_wxid in at_list:
+            return True
+        if self_nickname and self_nickname in at_list:
+            return True
     if not content:
         return False
     ids = [x for x in (self_wxid, self_nickname) if x]
@@ -419,9 +476,15 @@ def mentioned(content: str, self_wxid: str, self_nickname: str) -> bool:
     return False
 
 
+def parse_at_list(src: dict) -> list[str]:
+    """群消息的 @ 列表 (vendor 结构化字段或 `<atuserlist>` XML)。"""
+    return appmsg.parse_at_list(src)
+
+
 def build_reply_component(src: dict) -> Reply | None:
     """把引用回复上下文转成 AstrBot Reply 组件 (让模型读到被引用内容)。"""
-    ctx = src.get("reply_context")
+    info = appmsg.parse_appmsg(src)
+    ctx = info.get("quote")
     if not isinstance(ctx, dict):
         # 旧版 go_fields 里的转义结构也尝试一下
         go_fields = src.get("go_fields")
@@ -431,24 +494,27 @@ def build_reply_component(src: dict) -> Reply | None:
     if not isinstance(ctx, dict):
         return None
 
-    quote = safe_str(ctx.get("quote_content") or ctx.get("content"))
+    quote = safe_str(ctx.get("content") or ctx.get("quote_content"))
     if not quote:
         return None
-    msg_id = safe_str(ctx.get("new_msg_id") or ctx.get("svr_id") or ctx.get("msg_id"))
-    sender = safe_str(ctx.get("from_user_id"))
+    msg_id = safe_str(ctx.get("msg_id") or ctx.get("new_msg_id") or ctx.get("svr_id"))
+    sender = safe_str(ctx.get("sender") or ctx.get("from_user_id"))
     try:
         # AstrBot Reply.qq 是 int 字段 (wxid 非数字时置 0)
         qq = int(sender) if sender.isdigit() else 0
     except (TypeError, ValueError):
         qq = 0
+    ts = safe_num(ctx.get("time") or ctx.get("create_time"), 0)
+    if ts > 1e12:
+        ts //= 1000
     return Reply(
         id=msg_id,
         sender_id=sender,
-        sender_nickname=safe_str(ctx.get("display_name") or sender),
+        sender_nickname=safe_str(ctx.get("nickname") or ctx.get("display_name") or sender),
         message_str=quote,
         text=quote,
         qq=qq,
-        time=safe_num(ctx.get("create_time"), 0),
+        time=ts,
     )
 
 
@@ -514,23 +580,37 @@ def to_astrbot_message(
         abm.message = [Plain(content)]
 
     elif msg_type == MSG_TYPE_FILE or _is_file_app(src):
+        info = appmsg.parse_appmsg(src)
         file_obj = src.get("file") if isinstance(src.get("file"), dict) else {}
-        app_obj = src.get("app") if isinstance(src.get("app"), dict) else {}
+        app_obj = appmsg.app_payload(src)
+        app_file = app_obj.get("file") if isinstance(app_obj.get("file"), dict) else {}
+        file_info = info.get("file") or {}
+        dc: dict = {}
+        for candidate in (
+            file_obj.get("download_context"),
+            app_file.get("download_context"),
+            file_info.get("download_context"),
+        ):
+            if isinstance(candidate, dict) and candidate:
+                dc = candidate
+                break
         filename = (
             safe_str(app_obj.get("title"))
+            or safe_str(file_info.get("filename"))
             or safe_str(file_obj.get("name"))
             or safe_str(file_obj.get("filename"))
-            or content
+            or appmsg.clean_card_text(content, 120)
             or "file"
         )
-        dc = file_obj.get("download_context") if isinstance(file_obj.get("download_context"), dict) else {}
+        if appmsg.is_xml_like(filename):
+            filename = "file"
         abm.message_str = f"[文件] {filename}"
         abm.message = [Plain(abm.message_str)]
         abm._wpp_file_meta = {
             "filename": filename,
-            "attach_id": safe_str(dc.get("attach_id")),
-            "user_name": safe_str(dc.get("user_name")),
-            "data_len": safe_num(dc.get("data_len"), 0),
+            "attach_id": safe_str(dc.get("attach_id")) or safe_str(file_info.get("attach_id")),
+            "user_name": safe_str(dc.get("user_name")) or safe_str(file_info.get("user_name")),
+            "data_len": safe_num(dc.get("data_len") or file_info.get("data_len"), 0),
         }
 
     elif msg_type == MSG_TYPE_VOICE:
@@ -544,11 +624,13 @@ def to_astrbot_message(
             abm.message_str = "[语音]"
             abm.message = [Plain("[语音]")]
 
-    elif msg_type == MSG_TYPE_IMAGE:
+    elif msg_type == MSG_TYPE_IMAGE or safe_str(src.get("kind")).lower() == "image":
         img_obj = src.get("image") if isinstance(src.get("image"), dict) else {}
         local_id = safe_str(src.get("local_id")) or msg_id
         data_len = safe_num(img_obj.get("data_len"), 0)
         cdn_ctx = _pick_cdn_context(img_obj.get("cdn_download_contexts"))
+        if not cdn_ctx:
+            cdn_ctx = _pick_cdn_context([img_obj.get("cdn_download_context")])
         abm.message_str = "[图片]"
         abm.message = []
         # DownloadImg 的 to_wxid: 私聊=机器人自己, 群聊=群 ID (与 wpp-openclaw 一致)
@@ -559,7 +641,7 @@ def to_astrbot_message(
             "cdn": cdn_ctx,
         }
 
-    elif msg_type == MSG_TYPE_VIDEO or src.get("kind") == "video":
+    elif msg_type == MSG_TYPE_VIDEO or safe_str(src.get("kind")).lower() == "video":
         video_obj = src.get("video") if isinstance(src.get("video"), dict) else {}
         vc = video_obj.get("download_context") if isinstance(video_obj.get("download_context"), dict) else {}
         abm.message_str = "[视频]"
@@ -572,33 +654,48 @@ def to_astrbot_message(
         }
 
     elif msg_type == MSG_TYPE_APP:
-        if not content:
+        info = appmsg.parse_appmsg(src)
+        text = appmsg.format_appmsg(src, info)
+        if not text:
+            text = appmsg.clean_card_text(content)
+        if not text:
             return None
-        abm.message_str = content
-        abm.message = [Plain(content)]
+        abm.message_str = text
+        abm.message = [Plain(text)]
+
+    elif msg_type in (MSG_TYPE_LOCATION, MSG_TYPE_CONTACT):
+        info = appmsg.parse_appmsg(src)
+        text = appmsg.format_appmsg(src, info)
+        if not text:
+            text = appmsg.clean_card_text(content)
+        if not text:
+            return None
+        abm.message_str = text
+        abm.message = [Plain(text)]
 
     elif msg_type == MSG_TYPE_EMOJI:
-        abm.message_str = content or "[表情]"
+        text = appmsg.clean_card_text(content) if appmsg.is_xml_like(content) else content
+        abm.message_str = text or "[表情]"
         abm.message = [Plain(abm.message_str)]
 
     else:
-        if not content:
+        text = appmsg.clean_card_text(content) if appmsg.is_xml_like(content) else content
+        if not text:
             return None
-        abm.message_str = content
-        abm.message = [Plain(content)]
+        abm.message_str = text
+        abm.message = [Plain(text)]
 
-    _inject_at_component(src, abm, content, msg_type, self_wxid, self_nickname)
+    _inject_at_component(src, abm, content, self_wxid, self_nickname)
     _inject_reply_component(src, abm)
     return abm
 
 
 def _is_file_app(src: dict) -> bool:
-    app = src.get("app")
-    return (
-        src.get("kind") == "app"
-        and isinstance(app, dict)
-        and app.get("category") == "file"
-    )
+    # 兼容只有 `kind="app"` 没有数字 `type` 的推送
+    if src_msg_type(src) != MSG_TYPE_APP:
+        return False
+    app = appmsg.app_payload(src)
+    return safe_str(app.get("category")).lower() in ("file", "file_app", "files")
 
 
 def _pick_cdn_context(cdn_list: Any) -> dict | None:
@@ -617,18 +714,16 @@ def _inject_at_component(
     src: dict,
     abm: AstrBotMessage,
     content: str,
-    msg_type: int,
     self_wxid: str,
     self_nickname: str,
 ) -> None:
     if abm.type != MessageType.GROUP_MESSAGE:
         return
-    if not content or "@" not in content:
-        return
-    if msg_type not in (MSG_TYPE_TEXT, MSG_TYPE_APP):
-        return
     self_id = self_wxid or abm.self_id
-    if not self_id or not mentioned(content, self_id, self_nickname):
+    if not self_id:
+        return
+    at_list = appmsg.parse_at_list(src)
+    if not mentioned(content, self_id, self_nickname, at_list):
         return
     abm.message.insert(0, At(qq=self_id))
 
@@ -644,8 +739,10 @@ __all__ = [
     "MSG_TYPE_IMAGE",
     "MSG_TYPE_FILE",
     "MSG_TYPE_VOICE",
+    "MSG_TYPE_CONTACT",
     "MSG_TYPE_VIDEO",
     "MSG_TYPE_EMOJI",
+    "MSG_TYPE_LOCATION",
     "MSG_TYPE_APP",
     "MSG_TYPE_STATUS",
     "MSG_TYPE_SYSTEM",
@@ -673,6 +770,7 @@ __all__ = [
     "is_payment_card",
     "skip_reason",
     "mentioned",
+    "parse_at_list",
     "build_reply_component",
     "to_astrbot_message",
 ]
