@@ -16,8 +16,10 @@ from astrbot.api.message_components import At, AtAll, Location, Plain, Reply, Sh
 
 
 class FakeApi:
-    def __init__(self):
+    def __init__(self, nickname=""):
         self.calls = []
+        self.nick_calls = []
+        self._nickname = nickname
 
     async def send_text(self, to_wxid, content, ats=None):
         self.calls.append(("text", to_wxid, content, ats))
@@ -28,9 +30,13 @@ class FakeApi:
     async def send_location(self, to_wxid, lat, lon, label="", poi_name=""):
         self.calls.append(("loc", to_wxid, lat, lon, label, poi_name))
 
+    async def resolve_nickname(self, wxid, chatroom_id=""):
+        self.nick_calls.append((wxid, chatroom_id))
+        return self._nickname
 
-async def run_chain(chain, to_wxid="wxid_to"):
-    api = FakeApi()
+
+async def run_chain(chain, to_wxid="wxid_to", nickname=""):
+    api = FakeApi(nickname)
     await sender.send_chain(api, to_wxid, chain)
     return api.calls
 
@@ -72,6 +78,41 @@ class TestOutboundChain(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<title>@张三 收到</title>", xml)
         self.assertIn("<svrid>new123</svrid>", xml)
         self.assertIn("<fromusr>wxid_a</fromusr>", xml)
+
+    async def test_group_quote_resolves_wxid_to_group_nickname(self):
+        """入站缺昵称时 At.name == wxid, 应查群成员列表换成真实昵称。"""
+        calls = await run_chain(
+            [
+                Reply(id="new123", sender_id="wxid_a"),
+                At(qq="wxid_a", name="wxid_a"),
+                Plain("收到"),
+            ],
+            to_wxid="123@chatroom",
+            nickname="张三",
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIn("<title>@张三 收到</title>", calls[0][2])
+
+    async def test_group_quote_falls_back_to_wxid_when_nickname_unknown(self):
+        """查不到昵称时退回 @wxid, 与 wpp-openclaw displayName || fromusr 一致。"""
+        calls = await run_chain(
+            [
+                Reply(id="new123", sender_id="wxid_a"),
+                At(qq="wxid_a", name="wxid_a"),
+                Plain("收到"),
+            ],
+            to_wxid="123@chatroom",
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIn("<title>@wxid_a 收到</title>", calls[0][2])
+
+    async def test_group_quote_at_all_has_no_mention_prefix(self):
+        calls = await run_chain(
+            [Reply(id="new123"), AtAll(), Plain("收到")],
+            to_wxid="123@chatroom",
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertIn("<title>收到</title>", calls[0][2])
 
     async def test_private_quote_does_not_add_mention_prefix(self):
         calls = await run_chain(

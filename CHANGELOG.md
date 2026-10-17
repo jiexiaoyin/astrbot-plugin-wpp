@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.6.2 (2026-10-17) — 引用回复补全真实昵称
+
+### 修复
+- **群聊引用回复只有引用、没有 @ 昵称**：入站消息缺少 `fromNick` 等昵称字段时，
+  适配器会用 wxid 兜底，核心 `reply_with_mention` 生成的 `At.name` 因此等于 wxid；
+  v0.6.1 为避免发出 `@wxid_xxx` 直接跳过了前缀，导致实际没有 @。
+  现在引用回复发送前按以下顺序解析显示名：
+  1. `At.name`（非 wxid）
+  2. `Reply.sender_nickname`
+  3. vendor 群成员列表 `/Group/GetChatRoomMemberDetail`（非好友也能查）
+  4. 通讯录 `/Friend/GetContractDetail`
+  5. 仍查不到时退回 `@wxid`（与 wpp-openclaw `displayName || fromusr` 一致）
+- 昵称按 `(群, wxid)` 缓存 30 分钟，查询超时 5 秒；失败/超时不影响消息发送。
+- `@全体成员`（`AtAll`）不添加引用前缀。
+
+### 测试
+- 新增 `tests/test_nickname.py`（6 个用例）及引用昵称解析用例
+- 测试总数 105；真实主路径冒烟 20/20；真实 vendor 只读冒烟通过
+
 ## v0.6.1 (2026-10-17) — 群聊回复引用 + @ 发送人
 
 ### 修复

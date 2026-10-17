@@ -72,6 +72,8 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 后，适配器会把核心插入的 `At` / `Reply` 正确落到微信：
 - 引用 `refermsg.svrid` 使用入站 `NewMsgId`（不是本地 `msg_id`）；
 - 群聊引用气泡没有 `At` 字段，自动在正文前加 `@昵称 `；
+  入站缺昵称时按 `At.name` → `Reply.sender_nickname` → 群成员列表 →
+  通讯录依次解析，仍查不到则退回 `@wxid`（缓存 30 分钟，超时 5 秒）；
 - 普通文本回复使用 vendor `At` 字段。
 
 ### 🛡 完善的接入能力

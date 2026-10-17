@@ -12,6 +12,7 @@
 import asyncio
 import base64
 import json
+import time
 from typing import Any
 
 import aiohttp
@@ -19,6 +20,12 @@ from astrbot import logger
 
 # P2-3: 文件下载大小上限 (200MB, 与视频一致), 防超大文件撑爆内存
 MAX_FILE_BYTES = 200 * 1024 * 1024
+
+# 群成员昵称缓存: 引用回复时用来把 At.name 的 wxid 兜底替换成真实昵称。
+# 群成员列表调用较重, 同群同成员 30 分钟内只查一次 (与 wpp-openclaw 一致)。
+NICKNAME_CACHE_TTL_SECONDS = 1800.0
+# 查询失败/查无结果的负缓存: 避免 vendor 故障时每条引用回复都等 5s 超时。
+NICKNAME_FAILURE_TTL_SECONDS = 60.0
 
 
 class WppApiError(Exception):
@@ -45,6 +52,8 @@ class WppClient:
         self.auth_token = auth_token
         self.timeout = timeout
         self._session: aiohttp.ClientSession | None = None
+        # key=(chatroom_id, wxid) -> (nickname, monotonic_ts)
+        self._nickname_cache: dict[tuple[str, str], tuple[str, float]] = {}
 
     async def _session_acquire(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -148,6 +157,92 @@ class WppClient:
                     return {"Code": -2, "Success": False, "Message": f"非JSON响应: {text[:200]}"}
         except aiohttp.ClientError as e:
             return {"Code": -3, "Success": False, "Message": f"网络错误: {e}"}
+
+    # ------------------------------------------------------------ 昵称解析
+    @staticmethod
+    def _nick_value(value: Any) -> str:
+        if isinstance(value, dict):
+            # vendor 部分接口把昵称包成 {"string": "xxx"}
+            value = value.get("string") or value.get("String") or ""
+        return str(value or "").strip()
+
+    @classmethod
+    def _member_nickname(cls, member: dict) -> str:
+        for key in ("NickName", "nickName", "nickname", "Remark", "DisplayName", "displayName"):
+            nick = cls._nick_value(member.get(key))
+            if nick:
+                return nick
+        return ""
+
+    async def resolve_nickname(self, wxid: str, chatroom_id: str = "") -> str:
+        """解析群成员/联系人昵称, 失败返回空字符串。
+
+        群消息优先查群成员列表 (非好友也能查到), 再退回通讯录详情。
+        结果按 (群, wxid) 缓存 30 分钟, 避免每条引用回复都打 vendor。
+        """
+        wxid = str(wxid or "").strip()
+        if not wxid or wxid == "all":
+            return ""
+        chatroom_id = str(chatroom_id or "").strip()
+        key = (chatroom_id, wxid)
+        cached = self._nickname_cache.get(key)
+        if cached:
+            ttl = NICKNAME_CACHE_TTL_SECONDS if cached[0] else NICKNAME_FAILURE_TTL_SECONDS
+            if time.monotonic() - cached[1] < ttl:
+                return cached[0]
+
+        nick = ""
+        if chatroom_id.endswith("@chatroom"):
+            nick = await self._group_member_nickname(chatroom_id, wxid)
+        if not nick:
+            nick = await self._contact_nickname(wxid)
+        self._nickname_cache[key] = (nick, time.monotonic())
+        return nick
+
+    async def _group_member_nickname(self, chatroom_id: str, wxid: str) -> str:
+        try:
+            resp = await self._post(
+                "/Group/GetChatRoomMemberDetail", {"QID": chatroom_id}, max_retries=0
+            )
+        except Exception as e:  # noqa: BLE001 - 昵称查询失败不阻塞发送
+            logger.debug(f"[WPP] 群成员昵称查询失败 {chatroom_id}: {e}")
+            return ""
+        data = resp.get("Data") or {}
+        if not isinstance(data, dict):
+            return ""
+        room = data.get("NewChatroomData") or {}
+        members: Any = room.get("ChatRoomMember") if isinstance(room, dict) else None
+        if not members:
+            members = (
+                data.get("MemberList")
+                or data.get("ChatRoomMemberList")
+                or data.get("ChatroomMemberList")
+                or []
+            )
+        if not isinstance(members, list):
+            return ""
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            uid = str(member.get("UserName") or member.get("userName") or "")
+            if uid == wxid:
+                return self._member_nickname(member)
+        return ""
+
+    async def _contact_nickname(self, wxid: str) -> str:
+        try:
+            resp = await self._post(
+                "/Friend/GetContractDetail", {"userName": wxid}, max_retries=0
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[WPP] 联系人昵称查询失败 {wxid}: {e}")
+            return ""
+        data = resp.get("Data") or {}
+        contacts = data.get("ContactList") if isinstance(data, dict) else None
+        if not isinstance(contacts, list) or not contacts:
+            return ""
+        first = contacts[0]
+        return self._member_nickname(first) if isinstance(first, dict) else ""
 
     async def get_long_link_status(self) -> dict:
         """GET /api/Login/LongLinkStatus — 长连接运行状态 (更细粒度)。"""

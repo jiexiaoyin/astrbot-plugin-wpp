@@ -11,6 +11,7 @@ Reply 引用回复走 appmsg XML (type=57); Share 走链接卡片; Location 走�
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from typing import Any
@@ -163,8 +164,14 @@ async def send_chain(
             try:
                 # 群聊引用回复没有 At 字段, 与 wpp-openclaw 一致: 正文前加
                 # "@昵称 " 让被引用成员收到提醒 (核心 reply_with_mention
-                # 会先往链里插 At, 这里把它合并进引用气泡)。
-                quote_text = _quote_text_with_mention(to_wxid, text, ats)
+                # 会先往链里插 At, 这里把它合并进引用气泡)。At.name 可能
+                # 只是入站兜底的 wxid, 需再查一次群成员昵称。
+                mention_name = await _resolve_quote_mention_name(
+                    api, to_wxid, ats, pending_reply
+                )
+                quote_text = _quote_text_with_mention(
+                    to_wxid, text, ats, mention_name=mention_name
+                )
                 xml = build_quote_reply_xml(
                     quote_text,
                     getattr(pending_reply, "id", ""),
@@ -223,19 +230,66 @@ async def send_chain(
     await flush_text()
 
 
-def _quote_text_with_mention(to_wxid: str, text: str, ats: list[At]) -> str:
+# 昵称查询不能拖慢回复: 超时后直接退回 wxid
+NICKNAME_RESOLVE_TIMEOUT = 5.0
+
+
+async def _resolve_quote_mention_name(
+    api: WppClient, to_wxid: str, ats: list[At], reply: Reply | None
+) -> str:
+    """群聊引用回复的 @ 名称: At.name → Reply.sender_nickname → vendor 查询 → wxid。
+
+    入站消息常缺 sender 昵称, 适配器会用 wxid 兜底, 导致 At.name == At.qq;
+    此时查群成员列表拿真实昵称。查不到就退回 wxid, 与 wpp-openclaw 的
+    buildGroupMentionPrefix (`displayName || fromusr`) 行为一致。
+    """
+    if not to_wxid.endswith("@chatroom") or not ats:
+        return ""
+    at = ats[0]
+    qq = str(getattr(at, "qq", "") or "").strip()
+    if not qq or qq == "all":
+        return ""
+    for candidate in (
+        str(getattr(at, "name", "") or "").strip(),
+        str(getattr(reply, "sender_nickname", "") or "").strip(),
+    ):
+        if candidate and candidate != qq:
+            return candidate
+
+    resolver = getattr(api, "resolve_nickname", None)
+    if callable(resolver):
+        try:
+            nick = await asyncio.wait_for(
+                resolver(qq, to_wxid), timeout=NICKNAME_RESOLVE_TIMEOUT
+            )
+        except Exception as e:  # noqa: BLE001 - 昵称查询失败不影响发送
+            logger.debug(f"[WPP] 引用回复昵称解析失败 {qq}: {e}")
+            nick = ""
+        nick = str(nick or "").strip()
+        if nick:
+            return nick
+    return qq
+
+
+def _quote_text_with_mention(
+    to_wxid: str, text: str, ats: list[At], mention_name: str = ""
+) -> str:
     """群聊引用回复: 把核心插入的 At 合并为正文的 "@昵称 " 前缀。
 
     WeChat 的引用气泡 (appmsg type=57) 走 /Msg/ShareLink, 没有 At 字段,
     因此与 wpp-openclaw 的 buildGroupMentionPrefix 一致, 用正文前缀提醒。
-    私聊 / 无昵称时保持原文。
+    私聊 / @全体 时不加前缀。
     """
     if not to_wxid.endswith("@chatroom") or not ats:
         return text
     at = ats[0]
-    name = str(getattr(at, "name", "") or "").strip()
     qq = str(getattr(at, "qq", "") or "").strip()
-    if not name or name == qq:
+    if qq == "all":
+        return text
+    name = str(mention_name or "").strip() or str(getattr(at, "name", "") or "").strip()
+    if not name:
+        name = qq
+    if not name or name == "all":
         return text
     prefix = f"@{name}"
     if text.startswith(prefix):
