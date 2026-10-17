@@ -36,16 +36,16 @@ class FilehelperCommands:
     def __init__(self, account: "WppAccount") -> None:
         self.account = account
         self._commands: list[tuple[str, str, Any]] = [
-            ("/user add|del <wxid> [wxid...]", "私聊白名单增删 (批量)", self._user),
+            ("/user add/del wxid [可多个]", "私聊白名单增删", self._user),
             ("/user list", "查看私聊白名单", self._user),
-            ("/block add|del|list <wxid> [wxid...]", "私聊黑名单 (全部放行模式下排除)", self._block),
-            ("/group add|del <群ID> [群ID...]", "群白名单增删 (自动作为主动候选)", self._group),
-            ("/group list", "查看群白名单 / 自动主动候选", self._group),
-            ("/blacklist add|del|list <群ID> [群ID...]", "黑名单群管理 (批量)", self._blacklist),
-            ("/proactive add|del|list <群ID> [群ID...]", "显式补充主动候选 (群白名单已自动纳入)", self._proactive),
-            ("/mode atbot|none|all", "群消息准入模式", self._mode),
-            ("/at on|off", "群聊是否必须 @ 才回复", self._at),
-            ("/help [命令]", "显示帮助 / 单条命令详情", self._help),
+            ("/block add/del/list wxid [可多个]", "私聊黑名单，群聊也屏蔽", self._block),
+            ("/group add/del 群ID [可多个]", "群白名单增删，自动作为主动候选", self._group),
+            ("/group list", "查看群白名单和自动主动候选", self._group),
+            ("/blacklist add/del/list 群ID [可多个]", "群黑名单，与群白名单互斥", self._blacklist),
+            ("/proactive add/del/list 群ID [可多个]", "显式补充主动候选", self._proactive),
+            ("/mode atbot/none/all", "群消息准入模式", self._mode),
+            ("/at on/off", "群聊是否必须 @ 才回复", self._at),
+            ("/help [命令]", "显示帮助或单条命令详情", self._help),
         ]
 
     @property
@@ -364,12 +364,11 @@ class FilehelperCommands:
             if not matches:
                 await reply(f"未找到命令: {cmd}\n用 /help 查看全部命令。")
                 return
-            lines = [f"【{cmd} · 账号 {acct.account_id}】"]
+            lines = [f"【{cmd}】账号 {acct.account_id}"]
             for usage, desc in matches:
-                lines.append(usage)
-                lines.append(f"  {desc}")
-            lines.append("")
-            lines.append("用 /help 查看全部命令。")
+                lines.append(usage.replace("|", "/"))
+                lines.append(f"· {desc}")
+            lines.extend(["", "发送 /help 查看全部命令。"])
             await reply("\n".join(lines))
             return
 
@@ -384,39 +383,45 @@ class FilehelperCommands:
         else:
             effective = [g for g in candidates if g not in acct.blacklist_groups]
         lines = [
-            f"【WPP 命令 · 账号 {acct.account_id} · v{plugin_version()}】",
+            f"WPP 帮助 · 账号 {acct.account_id}",
+            f"版本 {plugin_version()}",
             "",
-            "📊 当前策略",
-            f"私聊白名单 {len(private)} | 私聊黑名单 {len(acct.block_users)}",
-            f"群白名单 {len(groups)} (全部自动作为主动候选)",
-            f"显式主动 {len(explicit)} | 生效主动 {len(effective)}",
-            f"黑名单群 {len(acct.blacklist_groups)} | "
-            f"群模式 {acct.group_reply} | "
-            f"必须@ {'on' if acct.require_at_mention else 'off'}",
+            "【当前策略】",
+            f"私聊白名单：{len(private)} 人",
+            f"私聊黑名单：{len(acct.block_users)} 人",
+            f"群白名单：{len(groups)} 个（自动主动候选）",
+            f"群黑名单：{len(acct.blacklist_groups)} 个",
+            f"主动候选：显式 {len(explicit)} 个，生效 {len(effective)} 个",
+            f"群模式：{acct.group_reply}",
+            f"必须@：{'开启' if acct.require_at_mention else '关闭'}",
+            "",
+            "────────────────",
         ]
         sections = (
             ("私聊", ("/user", "/block")),
-            ("群聊准入", ("/group", "/blacklist", "/proactive", "/mode", "/at")),
+            ("群聊", ("/group", "/blacklist", "/proactive", "/mode", "/at")),
             ("帮助", ("/help",)),
         )
         for title, prefixes in sections:
-            lines.extend(["", f"📋 {title}"])
+            lines.append(f"【{title}】")
             for usage, desc, _handler in self._commands:
                 if usage.split()[0].lower() in prefixes:
-                    lines.append(f"  {usage:<34} {desc}")
+                    # 微信纯文本: 不输出 Markdown 表格/竖线排版。
+                    lines.append(usage.replace("|", "/"))
+                    lines.append(f"· {desc}")
+            lines.append("────────────────")
         lines.extend(
             [
+                "【说明】",
+                "1. 群白名单只放行消息，不强制回复。",
+                "2. 群白名单自动纳入主动候选。",
+                "3. 未配置群白名单时，可用 /proactive add 补充。",
+                "4. 是否接话由 Heartflow 或 active_reply 决定。",
+                "5. Heartflow 白名单支持 auto / custom。",
+                "6. 群白名单必须包含心流白名单。",
+                "7. 管理员命令：/wpp_status、/wpp_policy、/wpp_sync。",
                 "",
-                "💡 说明",
-                "· 群白名单里的 @chatroom 自动纳入主动候选; "
-                "/proactive add 只在未配置群白名单时补充。",
-                "· 适配器只负责准入, 不强制唤醒; 是否接话由 "
-                "Heartflow / 内置 active_reply 决定。",
-                "· Heartflow 白名单: auto=参考群白名单, custom=单独设置; "
-                "群白名单必须包含心流白名单。",
-                "· 管理员命令: /wpp_status /wpp_policy /wpp_sync "
-                "(需 AstrBot 管理员权限)。",
-                "· 用 /help <命令> 查看单条详情, 例如 /help group。",
+                "发送 /help 命令 查看单条详情，例如 /help group",
             ]
         )
         await reply("\n".join(lines))

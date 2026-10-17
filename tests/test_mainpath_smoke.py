@@ -466,8 +466,9 @@ class TestMainPathSmoke(unittest.TestCase):
             "filehelper help",
             len(evs) == 0
             and bool(a._api.texts)
-            and "WPP 命令" in a._api.texts[-1][1]
-            and "群白名单必须包含心流白名单" in a._api.texts[-1][1],
+            and "WPP 帮助" in a._api.texts[-1][1]
+            and "群白名单必须包含心流白名单" in a._api.texts[-1][1]
+            and "|" not in a._api.texts[-1][1],
         )
 
         evs = self.run_src(
@@ -483,7 +484,7 @@ class TestMainPathSmoke(unittest.TestCase):
             "filehelper help detail",
             len(evs) == 0
             and a._api.texts[-1][1].startswith("【/group")
-            and "/group add|del" in a._api.texts[-1][1],
+            and "/group add/del" in a._api.texts[-1][1],
         )
 
         failed = [name for name, ok in cases if not ok]

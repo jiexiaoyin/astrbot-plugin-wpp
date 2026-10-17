@@ -1,4 +1,4 @@
-"""filehelper /help 输出 (v0.7.3): 策略摘要 + 分组命令 + 单命令详情。"""
+"""filehelper /help 输出: 微信纯文本 (无 Markdown) + 策略摘要 + 单命令详情。"""
 
 import importlib
 import sys
@@ -40,43 +40,47 @@ class TestHelp(unittest.IsolatedAsyncioTestCase):
 
     async def test_help_shows_version_and_policy_summary(self):
         text = await self._help("/help")
-        self.assertIn(f"v{commands_mod.plugin_version()}", text)
-        self.assertIn("私聊白名单 1", text)
-        self.assertIn("私聊黑名单 1", text)
-        self.assertIn("群白名单 2", text)
-        self.assertIn("全部自动作为主动候选", text)
-        self.assertIn("显式主动 2", text)
+        self.assertIn(f"版本 {commands_mod.plugin_version()}", text)
+        self.assertIn("私聊白名单：1 人", text)
+        self.assertIn("私聊黑名单：1 人", text)
+        self.assertIn("群白名单：2 个（自动主动候选）", text)
+        self.assertIn("主动候选：显式 2 个，生效 2 个", text)
         # 群白名单非空时, 白名单外的显式候选不会放行。
-        self.assertIn("生效主动 2", text)
-        self.assertIn("群模式 atbot", text)
-        self.assertIn("必须@ off", text)
+        self.assertIn("群模式：atbot", text)
+        self.assertIn("必须@：关闭", text)
+
+    async def test_help_is_wechat_plain_text(self):
+        text = await self._help("/help")
+        self.assertNotIn("**", text)
+        self.assertNotIn("`", text)
+        self.assertNotIn("|", text)
 
     async def test_help_none_mode_has_no_effective_proactive(self):
         text = await self._help("/help", make_account(group_reply="none"))
-        self.assertIn("群模式 none", text)
-        self.assertIn("生效主动 0", text)
+        self.assertIn("群模式：none", text)
+        self.assertIn("生效 0 个", text)
 
     async def test_help_blacklisted_group_not_effective(self):
         text = await self._help(
             "/help", make_account(blacklist_groups={"g1@chatroom"})
         )
-        self.assertIn("生效主动 1", text)
+        self.assertIn("生效 1 个", text)
 
     async def test_help_documents_new_versions_semantics(self):
         text = await self._help("/help")
-        self.assertIn("/group add|del", text)
+        self.assertIn("/group add/del", text)
         self.assertIn("自动作为主动候选", text)
         self.assertIn("/proactive add", text)
-        self.assertIn("只在未配置群白名单时补充", text)
-        self.assertIn("只负责准入, 不强制唤醒", text)
-        self.assertIn("auto=参考群白名单", text)
+        self.assertIn("未配置群白名单时，可用 /proactive add 补充", text)
+        self.assertIn("只放行消息，不强制回复", text)
+        self.assertIn("auto / custom", text)
         self.assertIn("群白名单必须包含心流白名单", text)
         self.assertIn("/wpp_policy", text)
 
     async def test_help_single_command(self):
         text = await self._help("/help group")
         self.assertTrue(text.startswith("【/group"))
-        self.assertIn("/group add|del <群ID>", text)
+        self.assertIn("/group add/del 群ID", text)
         self.assertIn("/group list", text)
 
     async def test_help_single_command_accepts_bare_name(self):
