@@ -129,6 +129,26 @@ class TestPolicyApi(unittest.TestCase):
             main_mod.asyncio.run(plugin.web_policy_update())
         self.assertEqual(acct.group_reply, "atbot")
 
+    def test_update_rejects_non_group_ids_in_group_lists(self):
+        acct = fake_account()
+        plugin = self._plugin(acct)
+        cases = (
+            ("blacklist_groups", ["wxid_not_a_group"], set()),
+            ("proactive_groups", ["123@chatroom", "not-a-group"], {"123@chatroom"}),
+            ("block_users", ["123@chatroom"], set()),
+        )
+        for field, value, expected in cases:
+            with self.subTest(field=field):
+                payload = {"account_id": "wpp", field: value}
+                with patch.object(
+                    main_mod.request, "json", AsyncMock(return_value=payload)
+                ):
+                    resp = main_mod.asyncio.run(plugin.web_policy_update())
+                body = json.loads(resp.body)
+                self.assertEqual(body["status"], "error")
+                self.assertIn(field, body["message"])
+                self.assertEqual(getattr(acct, field), expected)
+
     def test_status_refresh_calls_adapter_and_returns_instances(self):
         acct = fake_account()
         inst = fake_instance(acct)
@@ -144,6 +164,24 @@ class TestPolicyApi(unittest.TestCase):
         self.assertNotIn("data", body)
         self.assertEqual(body["refreshed"][0]["account_id"], "wpp")
         self.assertEqual(body["instances"][0]["id"], "wpp")
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["failed"], [])
+
+    def test_status_refresh_reports_failures(self):
+        acct = fake_account()
+        inst = fake_instance(acct)
+        inst._refresh_account_status = AsyncMock(side_effect=RuntimeError("offline"))
+        plugin = object.__new__(main_mod.WppPlugin)
+        plugin.context = SimpleNamespace(
+            platform_manager=SimpleNamespace(platform_insts=[inst])
+        )
+        with patch.object(main_mod.request, "json", AsyncMock(return_value={})):
+            resp = main_mod.asyncio.run(plugin.web_status_refresh())
+        body = json.loads(resp.body)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["failed"][0]["account_id"], "wpp")
+        self.assertEqual(body["failed"][0]["error"], "刷新失败")
+        self.assertNotIn("offline", json.dumps(body, ensure_ascii=False))
 
 
 if __name__ == "__main__":

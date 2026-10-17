@@ -268,7 +268,24 @@ class WppPlugin(Star):
                 value = re.split(r"[\s,，;；]+", value)
             if not isinstance(value, (list, tuple, set)):
                 return error_response(f"{field} 必须是数组")
-            setattr(acct, field, {str(v).strip() for v in value if str(v).strip()})
+            items = {str(v).strip() for v in value if str(v).strip()}
+            # 服务端与页面保持同一套校验, 避免脚本/第三方调用写入
+            # 语义错误的数据 (例如把群 ID 填进私聊黑名单)。
+            if field in ("blacklist_groups", "proactive_groups"):
+                bad = sorted(v for v in items if not v.endswith("@chatroom"))
+                if bad:
+                    return error_response(
+                        f"{field} 只能包含以 @chatroom 结尾的群 ID："
+                        + ", ".join(bad[:5])
+                    )
+            if field == "block_users":
+                bad = sorted(v for v in items if v.endswith("@chatroom"))
+                if bad:
+                    return error_response(
+                        "block_users 是私聊黑名单；群 ID 请填到 blacklist_groups："
+                        + ", ".join(bad[:5])
+                    )
+            setattr(acct, field, items)
             changed = True
         if "group_reply" in payload:
             mode = str(payload.get("group_reply", "") or "").strip()
@@ -322,15 +339,28 @@ class WppPlugin(Star):
                     continue
                 tasks.append(refresh(acct))
                 refreshed.append(
-                    {"instance_id": getattr(inst, "instance_id", ""),
-                     "account_id": acct.account_id}
+                    {
+                        "instance_id": getattr(inst, "instance_id", ""),
+                        "account_id": acct.account_id,
+                    }
                 )
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        else:
+            results = []
+        failed = []
+        for item, result in zip(refreshed, results):
+            if isinstance(result, BaseException):
+                failed.append({**item, "error": "刷新失败"})
+                logger.warning(
+                    f"[WPP] 刷新账号状态失败: instance={item['instance_id']} "
+                    f"account={item['account_id']}: {result}"
+                )
         return json_response(
             {
-                "ok": True,
+                "ok": not failed,
                 "refreshed": refreshed,
+                "failed": failed,
                 "version": plugin_version(),
                 "instances": self._policy_instances(),
             }

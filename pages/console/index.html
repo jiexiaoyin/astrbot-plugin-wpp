@@ -62,6 +62,13 @@
         display: flex; align-items: flex-end; justify-content: space-between;
         gap: 20px; flex-wrap: wrap; margin-bottom: 20px;
       }
+      .scope-note {
+        margin: -4px 0 18px; padding: 11px 14px;
+        border: 1px solid var(--line); border-radius: 11px;
+        background: var(--panel); color: var(--muted);
+        font-size: 12.5px; line-height: 1.65;
+      }
+      .scope-note b { color: var(--text); font-weight: 650; }
       .brand { display: flex; align-items: center; gap: 14px; min-width: 0; }
       .logo {
         width: 46px; height: 46px; border-radius: 15px; flex: none;
@@ -292,6 +299,12 @@
           <button id="syncBtn" type="button">同步 Heartflow</button>
         </div>
       </header>
+
+      <div class="scope-note" role="note">
+        <b>运行时策略以本页为准。</b>
+        vendor 地址、authcode、账号列表、Heartflow 模式请到
+        「平台适配器 → 微信 WPP」修改；适配器配置中的白名单/群策略是启动初始值。
+      </div>
 
       <section class="summary" id="summary" aria-label="概览">
         <div class="summary-card"><div class="k">账号</div><div class="v" id="sumAccounts">—</div></div>
@@ -618,6 +631,8 @@
         const errors = [];
         const privateGroups = v.privateUsers.filter(isGroup);
         if (privateGroups.length) errors.push(`私聊白名单包含群 ID：${privateGroups.join(", ")}`);
+        const blockGroups = v.blockUsers.filter(isGroup);
+        if (blockGroups.length) errors.push(`私聊黑名单包含群 ID：${blockGroups.join(", ")}`);
         const badGroups = v.groups.filter((g) => !isGroup(g));
         if (badGroups.length) errors.push(`群白名单包含非群 ID：${badGroups.join(", ")}`);
         const badBlacklist = v.blacklist.filter((g) => !isGroup(g));
@@ -813,10 +828,16 @@
           state.version = resp.version || state.version;
           if (dirty.size) {
             patchStatus(resp.instances || []);
-            toast("状态已刷新；有未保存的修改，表单已保留");
           } else {
             state.instances = resp.instances || [];
             renderAll();
+          }
+          const failed = resp.failed || [];
+          if (failed.length) {
+            toast(`状态刷新完成，${failed.length} 个账号失败`, true);
+          } else if (dirty.size) {
+            toast("状态已刷新；有未保存的修改，表单已保留");
+          } else {
             toast("账号状态已刷新");
           }
         } catch (e) {

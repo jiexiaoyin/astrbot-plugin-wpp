@@ -162,27 +162,27 @@ WPP_CONFIG_METADATA = {
     "wpp_accounts": {
         "description": "多账号模式: 账号列表 (JSON 数组)",
         "type": "string",
-        "hint": '多账号时用。JSON 数组, 每元素: {"id":"xieyin","authcode":"xxx","allow_users":"","block_users":"","group_reply":"atbot","blacklist_groups":"","require_at_mention":false,"proactive_groups":""}。留空=单账号(wpp_auth_token)',
+        "hint": '多账号时用。JSON 数组, 每元素: {"id":"xieyin","authcode":"xxx","allow_users":"","block_users":"","group_reply":"atbot","blacklist_groups":"","require_at_mention":false,"proactive_groups":""}。留空=单账号(wpp_auth_token)。每账号的策略字段是启动时的初始值；日常修改请在 WPP 控制台进行。',
     },
     "wpp_allow_users": {
         "description": "单账号模式: 白名单 wxid / 群ID (逗号分隔)",
         "type": "string",
-        "hint": "仅单账号时用。wxid 控制私聊, @chatroom 群ID 同时作为群白名单和主动回复候选（与白名单共用）。多账号的白名单在 wpp_accounts 每账号里配",
+        "hint": "仅单账号时用。wxid 控制私聊, @chatroom 群ID 同时作为群白名单和主动回复候选（与白名单共用）。作为启动初始值；日常修改请在 WPP 控制台进行，多账号白名单在 wpp_accounts 每账号里配",
     },
     "wpp_block_users": {
         "description": "单账号模式: 私聊黑名单 wxid (逗号分隔)",
         "type": "string",
-        "hint": "全部放行模式下用它排除特定 wxid (私聊/群聊都生效)。公众号/微信团队/微信支付/服务通知等系统消息已内置静默, 无需填写",
+        "hint": "全部放行模式下用它排除特定 wxid (私聊/群聊都生效)。公众号/微信团队/微信支付/服务通知等系统消息已内置静默, 无需填写。作为启动初始值；日常修改请在 WPP 控制台进行",
     },
     "wpp_group_reply": {
         "description": "单账号模式: 群消息回复模式",
         "type": "string",
-        "hint": "仅单账号时用。atbot=只放行@ / none=忽略群 / all=放行所有群消息(观察模式, 不强制回复)",
+        "hint": "仅单账号时用。atbot=只放行@ / none=忽略群 / all=放行所有群消息(观察模式, 不强制回复)。作为启动初始值；日常修改请在 WPP 控制台进行",
     },
     "wpp_proactive_groups": {
         "description": "单账号模式: 额外主动回复候选群 (逗号分隔群ID)",
         "type": "string",
-        "hint": "仅单账号时用。群白名单 (wpp_allow_users 中的 @chatroom) 已自动作为主动候选, 通常无需填写; 此项只用于未配置群白名单时显式补充。未@消息只放行不唤醒, 由 Heartflow/active_reply 决定是否接话。",
+        "hint": "仅单账号时用。群白名单 (wpp_allow_users 中的 @chatroom) 已自动作为主动候选, 通常无需填写; 此项只用于未配置群白名单时显式补充。未@消息只放行不唤醒, 由 Heartflow/active_reply 决定是否接话。作为启动初始值；日常修改请在 WPP 控制台进行。",
     },
     "wpp_sync_heartflow_whitelist": {
         "description": "群白名单自动同步到 Heartflow",

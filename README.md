@@ -148,8 +148,10 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
   - 入口：Dashboard → **插件** → 已安装插件 → `astrbot-plugin-wpp` →
     **打开插件UI界面**（打开的是第一页 `console`，即控制台）；
     也可进入插件详情 → 行为 → 页面条目 → 「打开」。
-  - 控制台管理**运行时策略**；vendor 地址/authcode、Heartflow 模式等仍在
-    Dashboard → 平台适配器 → 微信 WPP 配置中修改。
+  - 控制台是**运行时策略的唯一日常入口**；vendor 地址/authcode、账号列表、
+    Heartflow 模式等仍在 Dashboard → 平台适配器 → 微信 WPP 配置中修改。
+  - 适配器配置里的白名单/群策略字段是账号启动时的初始值；账号保存过策略后，
+    以控制台持久化的运行时配置为准。
 - **WPP 账号诊断**：查看已配置账号在线状态，或用 X-Access-Token 查询
   昵称/wxid/地区/签名；Token 仅用于本次请求，不落盘。
 - **在线状态卡片**：平台状态实时显示（多账号聚合）
@@ -315,6 +317,8 @@ docker exec -w /AstrBot/data/plugins astrbot \
 | `wpp_webhook_enabled` | — | 是否启用 webhook 兜底（默认 `false`，仅 WS）|
 
 > ⚠️ **单账号 vs 多账号**：配置 `wpp_auth_token`（+ 顶层白名单）= 单账号；配置 `wpp_accounts`（JSON 列表）= 多账号。两者只用一个。
+>
+> ⚠️ 上表中的白名单/群策略字段是账号启动时的初始值。日常增删白名单、切换群模式请使用 **WPP 控制台**；账号保存过运行时策略后，以控制台写入的 `wpp_whitelist.json` 为准，避免两处配置产生歧义。
 
 ### 👥 多账号（单实例内, 通过 authcode 隔离）
 一个 wpp 适配器实例可管理多个微信账号，**同一 vendor 地址**（`wpp_base_url` + `wpp_ws_url`），通过不同 `authcode` 隔离。每个账号独立：
