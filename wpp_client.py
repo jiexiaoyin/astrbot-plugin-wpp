@@ -71,10 +71,22 @@ class WppClient:
             h["X-Access-Token"] = self.auth_token
         return h
 
-    async def _post(self, endpoint: str, body: dict, max_retries: int = 2) -> dict:
-        """POST vendor API, 带 retry (参考 wpp-openclaw postWppJson: 网络错误指数退避重试)。"""
+    async def _post(
+        self,
+        endpoint: str,
+        body: dict,
+        max_retries: int = 2,
+        retry_safe: bool = True,
+    ) -> dict:
+        """POST vendor API, 带 retry。
+
+        retry_safe=False 用于发消息等**非幂等**接口: 网络超时后重试可能造成重复发送,
+        因此只尝试一次。查询/下载类接口保持退避重试。
+        """
         session = await self._session_acquire()
         url = self._url(endpoint)
+        if not retry_safe:
+            max_retries = 0
         last_err: Exception | None = None
         for attempt in range(1, max_retries + 2):
             try:
@@ -92,7 +104,7 @@ class WppClient:
                     if data.get("Success") is False or (code is not None and code != 0 and endpoint not in _IGNORE_CODE_ENDPOINTS):
                         raise WppApiError(code if code is not None else data.get("CodeValue", "?"), f"{endpoint} -> {text[:300]}")
                     return data
-            except aiohttp.ClientError as e:
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_err = e
                 if attempt <= max_retries:
                     await asyncio.sleep(0.5 * (2 ** (attempt - 1)))  # 0.5s, 1s
@@ -170,7 +182,9 @@ class WppClient:
             "section": {"start_pos": 0, "data_len": data_len},
         }
         try:
-            async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+            # 文件可能很大, 下载超时单独放宽 (默认 30s 不够)
+            timeout = aiohttp.ClientTimeout(total=max(self.timeout, 120))
+            async with session.post(url, json=body, headers=headers, timeout=timeout) as resp:
                 if resp.status != 200:
                     return None
                 # P2-3: 大小上限 (200MB), 防超大文件撑爆内存
@@ -178,13 +192,15 @@ class WppClient:
                 if content_length and content_length.isdigit() and int(content_length) > MAX_FILE_BYTES:
                     logger.warning(f"[WPP] file too large: {content_length} bytes, skip")
                     return None
-                buf = await resp.read()
+                buf = bytearray()
+                async for chunk in resp.content.iter_chunked(256 * 1024):
+                    buf.extend(chunk)
+                    if len(buf) > MAX_FILE_BYTES:
+                        logger.warning(f"[WPP] file too large (> {MAX_FILE_BYTES} bytes), skip")
+                        return None
                 if len(buf) < 10:
                     return None
-                if len(buf) > MAX_FILE_BYTES:
-                    logger.warning(f"[WPP] file too large: {len(buf)} bytes, skip")
-                    return None
-                return buf
+                return bytes(buf)
         except Exception:  # noqa: BLE001
             return None
 
@@ -320,15 +336,64 @@ class WppClient:
         body: dict = {"ToWxid": to_wxid, "Content": content, "Type": 1}
         if ats:
             body["At"] = ",".join(ats)
-        return await self._post("/Msg/SendTxt", body)
+        # 非幂等: 网络错误不重试, 避免重复发送
+        return await self._post("/Msg/SendTxt", body, retry_safe=False)
 
     async def send_image(self, to_wxid: str, image_ref: str) -> dict:
         """POST /api/Msg/UploadImg — 发图片。
 
-        image_ref 支持: URL / 本地路径 / base64://xxx / data:image/...;base64,xxx
+        image_ref 支持: URL / 本地路径 / file:// URI / base64:// / data:image/...
         """
         base64_str = await self._resolve_image_to_base64(image_ref)
-        return await self._post("/Msg/UploadImg", {"ToWxid": to_wxid, "Base64": base64_str})
+        return await self._post(
+            "/Msg/UploadImg", {"ToWxid": to_wxid, "Base64": base64_str}, retry_safe=False
+        )
+
+    async def send_file(self, to_wxid: str, filename: str, data: bytes) -> dict:
+        """POST /api/Msg/SendFile — 上传并发送文件。"""
+        return await self._post(
+            "/Msg/SendFile",
+            {
+                "ToWxid": to_wxid,
+                "FileName": filename or "file",
+                "Base64": base64.b64encode(data).decode(),
+            },
+            retry_safe=False,
+        )
+
+    async def send_video(self, to_wxid: str, data: bytes, play_length: int = 0) -> dict:
+        """POST /api/Msg/SendVideo — 发送视频 (Base64 + 可选封面/时长)。"""
+        return await self._post(
+            "/Msg/SendVideo",
+            {
+                "ToWxid": to_wxid,
+                "Base64": base64.b64encode(data).decode(),
+                "PlayLength": int(play_length or 0),
+            },
+            retry_safe=False,
+        )
+
+    async def send_voice(
+        self,
+        to_wxid: str,
+        data: bytes,
+        fmt_type: int = 3,
+        voice_time_ms: int = 0,
+    ) -> dict:
+        """POST /api/Msg/SendVoice — 发送语音。
+
+        Type: 0=AMR 1=SPEEX 2=MP3 3=WAVE 4=SILK; VoiceTime 单位毫秒。
+        """
+        return await self._post(
+            "/Msg/SendVoice",
+            {
+                "ToWxid": to_wxid,
+                "Base64": base64.b64encode(data).decode(),
+                "Type": int(fmt_type),
+                "VoiceTime": int(voice_time_ms or 0),
+            },
+            retry_safe=False,
+        )
 
     # ------------------------------------------------------------------ webhook
     async def set_webhook(self, url: str, secret: str = "") -> bool:
@@ -372,13 +437,21 @@ class WppClient:
 
     # ------------------------------------------------------------------ 工具
     async def _resolve_image_to_base64(self, image_ref: str) -> str:
-        """把 URL/路径/base64 统一成裸 base64 (无前缀)。"""
+        """把 URL/路径/file:// URI/base64 统一成裸 base64 (无前缀)。"""
+        if not image_ref:
+            raise WppApiError("bad_image", "空的图片引用")
         if image_ref.startswith("base64://"):
             return image_ref[len("base64://"):]
         if image_ref.startswith("data:image"):
-            head, _, b64 = image_ref.partition(";base64,")
+            _head, _, b64 = image_ref.partition(";base64,")
             if b64:
                 return b64
+        if image_ref.startswith("file://"):
+            # file:///tmp/a.jpg / file://tmp/a.jpg → 本地路径
+            from urllib.parse import unquote, urlparse
+
+            parsed = urlparse(image_ref)
+            image_ref = unquote(parsed.path or "")
         if image_ref.startswith("http://") or image_ref.startswith("https://"):
             # P1-2 SSRF 防护: 仅允许白名单域名 (微信 CDN / 腾讯云 OSS), 禁止请求内网/任意外部
             if not self._is_allowed_image_url(image_ref):

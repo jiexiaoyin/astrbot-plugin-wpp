@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.3.0 (2026-10-17) — 贴合 AstrBot 规范的重构 + 稳定性修复
+
+### 架构重构（模块拆分）
+- 新增 `wpp_messages.py`：vendor 消息解析/转换纯函数（事件过滤、@/引用、媒体元数据）
+- 新增 `wpp_policy.py`：白名单/群回复策略纯函数（可单测）
+- 新增 `wpp_media.py`：图片/文件/视频下载与消息链富化
+- 新增 `wpp_send.py`：出站消息链发送（Plain/At/Image/File/Record/Video）+ 长文本分片
+- 新增 `wpp_commands.py`：filehelper 命令注册表
+- 新增 `wpp_storage.py`：运行时数据持久化（原子写 + 旧目录迁移）
+- `wpp_account.py` / `wpp_adapter.py` / `main.py` 相应重写精简
+
+### 稳定性修复
+- **WS 收包不再被媒体下载阻塞**：`asyncio.Queue`（上限 1000）+ 单 worker 顺序处理；队列满时丢弃最旧并计数告警
+- **日志刷屏根因修复**：vendor 的 `friend_circle_update` 等非消息事件同样带 `items`，旧版误当消息处理（72h 内 4805 条 WARNING）。现按 `Data.type` 白名单过滤，过滤日志降为 debug + 每分钟 INFO 汇总
+- **去重落盘**：消息 ID 环形缓冲（500）持久化到 `dedup.json`，重启后不再重复处理历史消息
+- **群 @ 判断修正**：`require_at_mention` 必须 @ 机器人本人（旧版 @ 任意群友都放行）
+- **群图片下载目标修正**：群聊 `DownloadImg` 的 `to_wxid` 使用群 ID（与 wpp-openclaw 一致）
+- **临时文件管理**：媒体文件用唯一文件名，并 `event.track_temporary_local_file()` 交给 AstrBot 事件结束清理
+- **文件/视频发送**：新增 `SendFile` / `SendVideo` / `SendVoice` 端点支持
+- **发送重试安全**：发消息类非幂等接口网络错误不重试，避免重复发送；文件下载改为流式 + 200MB 上限
+
+### AstrBot 规范对齐
+- 平台元数据缓存在 `self.metadata`，`support_streaming_message=False`
+- 新增 `create_event()`；`send_by_session()` 复用 `send_chain` 并调用基类上报 metric
+- 会话 → 账号绑定（`bind_session`），多账号下主动推送也能路由到正确账号
+- 运行时数据迁移到 `data/plugin_data/astrbot-plugin-wpp/`（不再写插件源码目录）
+- 移除废弃的 `@register` 装饰器（类名 `WppPlugin` 自动发现）
+- `config_metadata` 修正：`isSecret` → `secret`，`wpp_webhook_enabled` 使用 `bool` 类型
+- 修复 `/wpp_status` 引用已移除的 `platform._api`（现遍历各账号）；Web API 的 `base_url` 增加配置白名单校验（防 SSRF）
+
+### 测试
+- 新增 `tests/test_core.py`（事件过滤/消息转换/策略/分片/持久化）；总计 32 个测试通过
+
 ## v0.2.0 (2026-08-26) — WS 实时主通道 + 单实例多账号
 
 ### WS 实时通道（主通道，webhook 退役）

@@ -41,6 +41,8 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 ### 🔌 WS 实时主通道（稳定收消息）
 - **WS 实时连接**：连 vendor `/ws/sync`，连接即拉全量离线 + 实时消息，**不丢消息**
 - **自动重连**：断连指数退避（1s→30s），长时间无活动也不掉线
+- **收包与处理解耦**（v0.3.0）：WS 只负责收包入队，媒体下载由单 worker 顺序处理，慢下载不会阻塞 WS ping / 收包
+- **非消息事件过滤**（v0.3.0）：只处理 `sync_message` 等消息事件，朋友圈/联系人推送不再被误解析（旧版日志刷屏根因）
 - **webhook 已退役**：不再依赖 vendor 回调，WS 主通道更可靠
 
 ### 👥 单实例多账号（一个插件管多个微信）
@@ -108,12 +110,22 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 |---|---|
 | `main.py` | 插件入口 (Star) + Web API (账号信息查询) |
 | `wpp_adapter.py` | 平台适配器 (账号管理器 + 账号解析 + 生命周期 + 发送路由) |
-| `wpp_account.py` | WppAccount 类 (单个微信账号: WS 连接 + 白名单 + 消息处理 + filehelper) |
+| `wpp_account.py` | WppAccount 类 (单账号: WS + 有界队列/worker + 白名单 + 去重) |
+| `wpp_messages.py` | vendor 消息解析/转换 (纯函数, 含非消息事件过滤) |
+| `wpp_policy.py` | 白名单/群回复策略 (纯函数) |
+| `wpp_media.py` | 图片/文件/视频下载 + 消息链富化 |
+| `wpp_send.py` | 出站消息链发送 + 长文本分片 |
+| `wpp_commands.py` | filehelper 管理命令 |
+| `wpp_storage.py` | 运行时数据持久化 (白名单/去重, 原子写) |
 | `wpp_client.py` | WPP vendor HTTP/WS API 封装 (retry + 超时) |
 | `wpp_event.py` | 消息事件 (重写 send 真正发送到微信) |
-| `tests/` | 多账号架构测试 (pytest) |
+| `tests/` | 单元测试 (pytest, 在 AstrBot 容器内运行) |
 | `pages/account-info/` | Dashboard 账号信息页面 |
 | `logo.png` | 插件 + 平台适配器图标 |
+
+运行时数据（白名单、去重状态）写在 AstrBot 标准插件数据目录：
+`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/`。
+旧版写在插件目录 `accounts/` 下的数据会在启动时自动迁移。
 
 ---
 
@@ -131,6 +143,12 @@ docker restart astrbot
 
 # 4. Dashboard (http://<host>:6185) → 平台适配器 → 添加 "微信 WPP"
 #    填配置 (见下表) → 保存启用
+```
+
+### 测试（容器内运行，插件依赖 AstrBot 运行时）
+
+```bash
+docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/tests -v
 ```
 
 ---
@@ -152,7 +170,7 @@ docker restart astrbot
 ### 👥 多账号（单实例内, 通过 authcode 隔离）
 一个 wpp 适配器实例可管理多个微信账号，**同一 vendor 地址**（`wpp_base_url` + `wpp_ws_url`），通过不同 `authcode` 隔离。每个账号独立：
 - WS 实时连接（用该账号 authcode 鉴权）
-- 白名单/群策略/黑名单（`accounts/<account_id>/wpp_whitelist.json` 独立持久化）
+- 白名单/群策略/黑名单（`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/wpp_whitelist.json` 独立持久化）
 - filehelper 命令（各自管理自己的白名单）
 - 消息去重 / 机器人身份
 
@@ -183,7 +201,7 @@ filehelper 命令输出带账号标识（如 `【WPP 命令 (账号 xieyin)】`�
 
 - `auth_token` 走 Dashboard WebUI 配置 (`platform_config`)，**不写进代码/日志**
 - 日志不打印明文凭证
-- 配置字段用 `isSecret` 标记（密码框输入）
+- 配置字段用 `secret: true` 标记（密码框输入）
 
 ---
 

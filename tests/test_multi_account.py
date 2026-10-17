@@ -57,7 +57,7 @@ class TestParseAccounts(unittest.TestCase):
         self.assertEqual(len(accounts), 1)
         self.assertEqual(accounts[0]["id"], "wpp")
         self.assertEqual(accounts[0]["authcode"], "token_xieyin")
-        self.assertEqual(accounts[0]["allow_users"], "u1,u2")
+        self.assertEqual(accounts[0]["allow_users"], {"u1", "u2"})
 
     def test_multi_account_parse(self):
         """多账号: wpp_accounts JSON 解析。"""
@@ -107,8 +107,8 @@ class TestWppAccountIsolation(unittest.TestCase):
         plat = FakePlatform()
         acct_a = WppAccount(plat, "acct_a", "tokA", "http://x:1", "wss://x/ws")
         acct_b = WppAccount(plat, "acct_b", "tokB", "http://x:1", "wss://x/ws")
-        path_a = acct_a._get_whitelist_file_path()
-        path_b = acct_b._get_whitelist_file_path()
+        path_a = str(acct_a.store.config_path)
+        path_b = str(acct_b.store.config_path)
         self.assertIn("accounts", path_a)
         self.assertIn("acct_a", path_a)
         self.assertIn("acct_b", path_b)

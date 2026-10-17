@@ -90,8 +90,9 @@ docker logs -f astrbot
 
 ```bash
 cd /root/dev/astrbot-plugin-wpp
-# 1. 脱敏检查（必须无输出 — juhe.chat 域名/真实 authcode/wxid/IP 严禁公开）
-grep -rniE "juhe\.chat|988bc745|71bed0f5|q139198824|你的authcode|你的宿主IP|你的wxid" --include="*.py" --include="*.json" --include="*.md" .
+# 1. 脱敏检查（必须无输出 — vendor 域名 / authcode / 真实 wxid / 宿主 IP 严禁公开）
+#    用法: 把下面 4 个占位符替换成本机真实敏感串后再执行（不要把真实值写回本文件）
+grep -rniE "<vendor-domain>|<authcode>|<real-wxid>|<host-ip>" --include="*.py" --include="*.json" --include="*.md" .
 # 2. 提交
 git add -A
 git commit -m "desc: 更新说明"

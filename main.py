@@ -1,18 +1,19 @@
 """astrbot-plugin-wpp 插件入口。
 
 官方平台适配器插件范式 (docs/zh/dev/plugin-platform-adapter.md):
-  - main.py 必须有 Star 类 (否则 star_manager 拒绝加载)
+  - main.py 必须有 Star 类 (类名以 Plugin 结尾会被自动发现)
   - 平台适配器在独立文件 wpp_adapter.py, 用 @register_platform_adapter 装饰
   - 在 __init__ 里 import 适配器模块, 装饰器会自动注册
 
-微信消息流: 微信 → WPP vendor → POST webhook → 本插件 → AstrBot 核心 → 回微信
+微信消息流: 微信 → WPP vendor → WS / webhook → 本插件 → AstrBot 核心 → 回微信
 """
 
 import asyncio
 
-from astrbot.api.star import Context, Star, register
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.web import request, json_response, error_response
+from astrbot.api.star import Context, Star
+from astrbot.api.web import error_response, json_response, request
+
 from .wpp_client import WppClient
 
 # 触发平台适配器注册: AstrBot 加载插件目录是 namespace package,
@@ -24,13 +25,6 @@ from . import wpp_adapter  # noqa: F401  (must be at module top level)
 PLUGIN_NAME = "astrbot-plugin-wpp"
 
 
-@register(
-    name=PLUGIN_NAME,
-    author="jiexiaoyin",
-    desc="让微信成为 AstrBot 的一等平台 (WeChatPadPro)",
-    version="0.2.0",
-    repo="",
-)
 class WppPlugin(Star):
     def __init__(self, context: Context) -> None:
         super().__init__(context)
@@ -48,28 +42,37 @@ class WppPlugin(Star):
         前端 Pages: pages/account-info/index.html
         """
         payload = await request.json(default={})
-        token = (payload or {}).get("token", "")
-        base_url = (payload or {}).get("base_url", "")
-        instance_id = (payload or {}).get("instance_id", "")
+        payload = payload if isinstance(payload, dict) else {}
+        token = str(payload.get("token", "") or "").strip()
+        base_url = str(payload.get("base_url", "") or "").strip()
+        instance_id = str(payload.get("instance_id", "") or "").strip()
         if not token:
             return error_response("缺少 X-Access-Token")
 
-        # base_url 可选; 缺省从已注册的 wpp 适配器配置读取 (多账号 v0.2.0: 支持按 instance_id)
-        if not base_url:
-            base_url = self._get_wpp_base_url(instance_id or None)
-        base_url = str(base_url).rstrip("/")
+        # SSRF 防护: base_url 只允许使用已配置的适配器地址, 不接受任意 URL
+        configured = self._configured_base_urls()
+        if base_url:
+            base_url = base_url.rstrip("/")
+            if not configured:
+                return error_response("尚未配置 WPP 平台适配器, 无法校验 base_url")
+            if base_url not in configured:
+                return error_response("base_url 不在已配置的 WPP 地址列表中")
+        else:
+            base_url = self._get_wpp_base_url(instance_id or None).rstrip("/")
 
         client = WppClient(base_url, token)
-        # 面板地址: 从 base_url 派生 (前端显示用, 避免硬编码 127.0.0.1:18062)
         panel_url = base_url
         try:
             online, resp = await client.is_online()
             data = resp.get("Data") or {}
             if online:
                 prof = await self._fetch_profile(client)
-                # ⚠️ 不要用 "data" 字段名! Dashboard 前端解构 r.data.data 会拿到它,
-                #    导致 bridge 端收到的是 GetOnlineInfo.Data 而不是完整响应。
-                resp_payload = {"online": True, "account_data": data, "message": resp.get("Message", "成功"), "panel_url": panel_url}
+                resp_payload = {
+                    "online": True,
+                    "account_data": data,
+                    "message": resp.get("Message", "成功"),
+                    "panel_url": panel_url,
+                }
                 resp_payload["profile"] = prof
                 # 扁平化: 顶层也放 profile 字段, 前端可直接读 resp.nickname
                 if prof:
@@ -77,13 +80,18 @@ class WppPlugin(Star):
                 return json_response(resp_payload)
             # 不在线: 尝试自动心跳拉上线 (账号已登录但长连接未建立)
             if resp.get("Code") == 0:
-                hb = await client.auto_heartbeat()
+                await client.auto_heartbeat()
                 await asyncio.sleep(2)
                 online, resp = await client.is_online()
                 if online:
                     data = resp.get("Data") or {}
                     prof = await self._fetch_profile(client)
-                    resp_payload = {"online": True, "account_data": data, "message": f"自动心跳已拉起: {resp.get('Message', '')}", "panel_url": panel_url}
+                    resp_payload = {
+                        "online": True,
+                        "account_data": data,
+                        "message": f"自动心跳已拉起: {resp.get('Message', '')}",
+                        "panel_url": panel_url,
+                    }
                     resp_payload["profile"] = prof
                     if prof:
                         resp_payload.update(prof)
@@ -105,10 +113,7 @@ class WppPlugin(Star):
             await client.close()
 
     def _get_wpp_instances(self) -> list:
-        """返回所有已注册的 wpp 平台适配器实例 (多账号 v0.2.0)。
-
-        多实例时按 meta().id 区分 (instance_id)。单实例兼容: 返回 [实例] 或 []。
-        """
+        """返回所有已注册的 wpp 平台适配器实例。"""
         try:
             pm = getattr(self.context, "platform_manager", None)
             insts = getattr(pm, "platform_insts", []) if pm else []
@@ -118,6 +123,15 @@ class WppPlugin(Star):
             ]
         except Exception:  # noqa: BLE001
             return []
+
+    def _configured_base_urls(self) -> set[str]:
+        """已配置的 WPP vendor 地址集合 (web API 的 base_url 白名单)。"""
+        urls: set[str] = set()
+        for inst in self._get_wpp_instances():
+            base = str(getattr(inst, "base_url", "") or "").rstrip("/")
+            if base:
+                urls.add(base)
+        return urls
 
     def _get_wpp_base_url(self, instance_id: str | None = None) -> str:
         """从已注册的 wpp 平台适配器配置读取 base_url。
@@ -167,8 +181,7 @@ class WppPlugin(Star):
 
     @filter.command("wpp_status")
     async def wpp_status(self, event: AstrMessageEvent):
-        """查询 WPP 账号在线状态 (多账号 v0.2.0: 支持 /wpp_status <实例id>)。"""
-        # 从已注册的适配器实例拿凭证 (遍历平台管理器里的 wpp 实例)
+        """查询 WPP 账号在线状态 (多账号: /wpp_status [实例id|账号id])。"""
         insts = self._get_wpp_instances()
         if not insts:
             yield event.plain_result(
@@ -176,21 +189,40 @@ class WppPlugin(Star):
             )
             return
 
-        # 支持 /wpp_status <实例id> 指定实例; 缺省第一个 (单实例兼容)
-        target_id = ""
         parts = event.message_str.strip().split()
-        if len(parts) > 1:
-            target_id = parts[1].strip()
-        platform = next((i for i in insts if getattr(i, "instance_id", "") == target_id), insts[0]) if target_id else insts[0]
+        target = parts[1].strip() if len(parts) > 1 else ""
 
-        online = await platform._api.get_online_info()
-        longlink = await platform._api.get_long_link_status()
+        # 目标可以是实例 id (列出该实例全部账号) 或账号 id (只列该账号)
+        targets = []
+        for inst in insts:
+            if not target or getattr(inst, "instance_id", "") == target:
+                targets.extend(getattr(inst, "accounts", []))
+            else:
+                targets.extend(
+                    a for a in getattr(inst, "accounts", [])
+                    if a.account_id == target
+                )
+        if not targets:
+            yield event.plain_result(f"未找到 WPP 实例/账号: {target}")
+            return
 
-        inst_label = getattr(platform, "instance_id", "wpp")
-        parts = [f"【WPP 账号状态 (实例 {inst_label})】"]
-        if online.get("Code") == 0:
-            parts.append(f"✅ 在线: {online.get('Data')}")
-        else:
-            parts.append(f"⚠️ 未登录/离线: {online.get('Message', '')}")
-        parts.append(f"长连接: {longlink.get('Message', longlink.get('Data', '无数据'))}")
-        yield event.plain_result("\n".join(parts))
+        lines = ["【WPP 账号状态】"]
+        for acct in targets:
+            try:
+                online = await acct._api.get_online_info()
+                longlink = await acct._api.get_long_link_status()
+            except Exception as e:  # noqa: BLE001
+                lines.append(f"⚠️ {acct.account_id}: 查询失败 ({e})")
+                continue
+            if online.get("Code") == 0:
+                data = online.get("Data") or {}
+                wxid = data.get("wxid", "")
+                online_flag = data.get("online")
+                icon = "✅" if online_flag is True else "⚠️"
+                lines.append(f"{icon} {acct.account_id}: wxid={wxid or '-'} online={online_flag}")
+            else:
+                lines.append(f"❌ {acct.account_id}: {online.get('Message', '未登录/离线')}")
+            lines.append(
+                f"   长连接: {longlink.get('Message', longlink.get('Data', '无数据'))}"
+            )
+        yield event.plain_result("\n".join(lines))
