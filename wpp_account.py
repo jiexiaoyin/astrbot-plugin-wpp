@@ -20,6 +20,7 @@ v0.3.0 变化:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any
 
@@ -167,8 +168,6 @@ class WppAccount:
                     logger.info(f"[WPP:{self.account_id} WS] connected")
                     async for raw in ws:
                         try:
-                            import json
-
                             payload = json.loads(raw)
                         except Exception:  # noqa: BLE001
                             continue
@@ -258,18 +257,19 @@ class WppAccount:
         recipient_id = src_recipient(src)
         is_group = bool(chatroom_id)
 
-        # filehelper 管理命令 (自身发出的消息 direction=outgoing, 需在方向过滤之前处理)
-        if src_is_filehelper(src) and content.startswith("/"):
-            await self._handle_filehelper_command(content)
-            return
-
         # 去重: 在处理入口记录, 避免同一消息因重连/重推被处理两次
+        # (filehelper 命令也去重 — WS 重连会重推历史消息, 不能让 /group add 重复执行)
         msg_key = src_msg_key(src)
         if msg_key:
             if msg_key in self._seen_msg_ids:
                 logger.debug(f"[WPP:{self.account_id}] 重复消息已跳过: id={msg_key}")
                 return
             self._record_seen_msg(msg_key)
+
+        # filehelper 管理命令 (自身发出的消息 direction=outgoing, 需在方向过滤之前处理)
+        if src_is_filehelper(src) and content.startswith("/"):
+            await self._handle_filehelper_command(content)
+            return
 
         logger.debug(
             f"[WPP:{self.account_id}] 收到: from={from_wxid} group={chatroom_id or '-'} "
