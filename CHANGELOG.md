@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.9.0 (2026-10-20) — 新人进群欢迎语
+
+### 新增
+- **进群欢迎语**（纯模板，不含 LLM 润色）：
+  - 识别群成员变动系统通知（`msgType=10000` 占位符 / `kind=system` /
+    进群退群文案 / 嵌套原文），通知本身仍按既有规则静默丢弃，不进入 AstrBot 事件；
+  - 收到通知后强拉一次群成员表，与 per-account 基线 `members.json` 做 diff，
+    只为**真正新增**的成员发欢迎语；
+  - 首次同步某群只建基线、不欢迎任何人；`maxBatch`（默认 3）拦截基线重建/
+    清表造成的大批「新人」；同群 30 秒内只抓一次；
+  - **先落盘新基线、再发欢迎语**：至多一次，宁可丢一条也绝不重复刷屏；
+  - 抓取/发送都在后台 task（每群一把锁），不阻塞消息 worker；
+  - 欢迎语不受出站复读保护影响（`send_text(..., bypass_repeat_guard=True)`），
+    AI 回复保持原行为；
+  - 静默时段 `quietHours`、`mention` 开关、模板占位符 `{name}` / `{group}`。
+- **配置**：`wpp_whitelist.json` 的 `join_welcome` 段，3 秒热更新，无需重启；
+  `enabled` 默认 `false`。新增 `mode: whitelist`（动态跟随群白名单，推荐）。
+- **命令**：filehelper `/welcome on|off|list`；`/help` 增加进群欢迎摘要。
+
+### 变更
+- `save_policy()` 改为**读-改-写**：`/group add` 等命令只更新自己负责的键，
+  不再抹掉 `join_welcome` 及用户手写的未知配置。
+- 新增 `WppClient.fetch_group_snapshot()`（绕过 30 分钟群资料缓存，空成员=失败）。
+- 新增纯函数模块 `wpp_join_events.py`（通知识别）与
+  `wpp_join_welcome.py`（配置/diff/文案）。
+- 运行时数据新增 `members.json`（群成员基线）。
+
+### 测试
+- 新增进群事件识别、欢迎配置/diff、成员快照、`members.json` 持久化、
+  `/welcome` 命令与完整主路径（通知 → diff → 发送）用例；测试总数 210。
+
 ## v0.8.1 (2026-10-17) — 配置边界与策略校验
 
 ### 变更

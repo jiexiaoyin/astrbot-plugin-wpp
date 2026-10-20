@@ -9,6 +9,7 @@
 """
 
 import asyncio
+import copy
 import importlib
 import sys
 import unittest
@@ -24,8 +25,11 @@ plugin_main = importlib.import_module("astrbot-plugin-wpp.main")
 
 
 class StubStore:
+    """内存版 AccountStore: 不碰真实磁盘, members 可断言。"""
+
     def __init__(self, *a, **k):
-        pass
+        self.members = {"version": 1, "updated_at": 0, "chatrooms": {}}
+        self.fail_members = False
 
     def load_dedup(self):
         return []
@@ -41,6 +45,14 @@ class StubStore:
 
     def save_config(self, *a, **k):
         pass
+
+    def load_members(self):
+        return copy.deepcopy(self.members)
+
+    def save_members(self, state):
+        if self.fail_members:
+            raise OSError("disk full")
+        self.members = copy.deepcopy(state)
 
 
 GROUP_PROFILE = {
@@ -59,10 +71,16 @@ class FakeClient:
         self.group_profile_calls = 0
         self.nickname_calls = 0
         self.texts = []
+        self.snapshot = None
+        self.snapshot_calls = []
 
-    async def send_text(self, to, text, *a, **k):
-        self.texts.append((to, text))
+    async def send_text(self, to, text, ats=None, *a, **k):
+        self.texts.append((to, text, ats))
         return {"Code": 0}
+
+    async def fetch_group_snapshot(self, chatroom_id):
+        self.snapshot_calls.append(chatroom_id)
+        return copy.deepcopy(self.snapshot)
 
     async def download_image_cdn(self, *a, **k):
         self.image_calls += 1
@@ -142,6 +160,7 @@ class TestMainPathSmoke(unittest.TestCase):
         allow_users=None,
         proactive_groups=None,
         require_at_mention=False,
+        welcome=None,
     ):
         acc = account_mod.WppAccount(
             Plat(),
@@ -156,11 +175,26 @@ class TestMainPathSmoke(unittest.TestCase):
         )
         acc._self_wxid = "wxid_bot"
         acc._self_nickname = "小助手"
+        if welcome is not None:
+            acc._join_welcome_raw = dict(welcome)
         return acc
 
     @staticmethod
     def run_src(acc, src):
         asyncio.run(acc._process_src(src))
+        return acc.platform.events
+
+    @staticmethod
+    def run_src_with_tasks(acc, src):
+        """主路径 + 等待进群欢迎后台任务完成 (生产里是独立 task)。"""
+
+        async def _run():
+            await acc._process_src(src)
+            tasks = [t for t in acc._welcome_tasks if not t.done()]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        asyncio.run(_run())
         return acc.platform.events
 
     def test_main_path_smoke(self):
@@ -485,6 +519,157 @@ class TestMainPathSmoke(unittest.TestCase):
             len(evs) == 0
             and a._api.texts[-1][1].startswith("【/group")
             and "/group add/del" in a._api.texts[-1][1],
+        )
+
+        failed = [name for name, ok in cases if not ok]
+        self.assertEqual(
+            failed,
+            [],
+            f"{len(cases) - len(failed)}/{len(cases)} passed; failed={failed}",
+        )
+
+    def test_join_welcome_main_path(self):
+        """v0.9.0: 系统通知 → 成员 diff → 欢迎语整条链路。"""
+        cases = []
+
+        def check(name, passed):
+            cases.append((name, bool(passed)))
+
+        room = "12345678901@chatroom"
+        whitelist = {room}
+
+        def notice(msg_id):
+            return {
+                "sender_id": "wxid_sys",
+                "chatroom_id": room,
+                "msg_id": msg_id,
+                "msg_type": 10000,
+                "content": "收到一条微信系统通知",
+            }
+
+        def current_snapshot(acc, extra=None):
+            state = acc.store.members["chatrooms"][room]["members"]
+            members = {
+                wxid: (v.get("nick") if isinstance(v, dict) else v)
+                for wxid, v in state.items()
+            }
+            members.update(extra or {})
+            return {"name": "调试群", "members": members}
+
+        # 默认关闭: 系统通知仍静默, 不抓成员
+        a = self.new_acc(allow_users=whitelist)
+        evs = self.run_src_with_tasks(a, notice("jw0"))
+        check(
+            "welcome disabled no fetch",
+            len(evs) == 0 and a._api.snapshot_calls == [],
+        )
+
+        # 首次只建基线, 不欢迎任何人
+        a = self.new_acc(
+            allow_users=whitelist, welcome={"enabled": True, "mode": "whitelist"}
+        )
+        a._api.snapshot = {"name": "调试群", "members": {"wxid_a": "张三"}}
+        evs = self.run_src_with_tasks(a, notice("jw1"))
+        check(
+            "first snapshot builds baseline only",
+            len(evs) == 0
+            and a._api.texts == []
+            and list(a.store.members["chatrooms"][room]["members"]) == ["wxid_a"],
+        )
+
+        # diff 出新人 → 发欢迎语 (@ 新人)
+        a._welcome_last_check.clear()
+        a._api.snapshot = {
+            "name": "调试群",
+            "members": {"wxid_a": "张三", "wxid_b": "李四"},
+        }
+        evs = self.run_src_with_tasks(a, notice("jw2"))
+        sent = a._api.texts[-1] if a._api.texts else None
+        check(
+            "welcome sent on diff",
+            len(a._api.texts) == 1
+            and sent[0] == room
+            and sent[1] == "欢迎 @李四 加入调试群！"
+            and sent[2] == ["wxid_b"]
+            and "wxid_b" in a.store.members["chatrooms"][room]["members"],
+        )
+        check("system notice still silent", len(evs) == 0)
+
+        # 快照失败: 保留旧基线, 不发
+        before = copy.deepcopy(a.store.members)
+        a._welcome_last_check.clear()
+        a._api.snapshot = None
+        self.run_src_with_tasks(a, notice("jw3"))
+        check(
+            "snapshot failure keeps baseline",
+            a.store.members == before and len(a._api.texts) == 1,
+        )
+
+        # 30 秒节流: 同群连推两条只抓一次
+        calls = len(a._api.snapshot_calls)
+        self.run_src_with_tasks(a, notice("jw4"))
+        check("member event throttled", len(a._api.snapshot_calls) == calls)
+
+        # maxBatch: 一次冒出太多新人 ⇒ 只更新基线
+        a._welcome_last_check.clear()
+        a._api.snapshot = {
+            "name": "调试群",
+            "members": {f"wxid_{i}": f"人{i}" for i in range(6)},
+        }
+        self.run_src_with_tasks(a, notice("jw5"))
+        check(
+            "maxBatch updates baseline without send",
+            len(a._api.texts) == 1
+            and len(a.store.members["chatrooms"][room]["members"]) == 6,
+        )
+
+        # 快照没有群名时沿用基线里记住的群名 (比「本群」更有信息量)
+        a._welcome_last_check.clear()
+        a._api.snapshot = current_snapshot(a, {"wxid_new": "王五"})
+        a._api.snapshot["name"] = ""
+        self.run_src_with_tasks(a, notice("jw6"))
+        check(
+            "group name falls back to baseline",
+            len(a._api.texts) == 2 and "加入调试群" in a._api.texts[-1][1],
+        )
+
+        # 两边都没有群名 → 「本群」
+        a._welcome_last_check.clear()
+        group_state = a._members_state["chatrooms"][room]
+        group_state["name"] = ""
+        a.store.members["chatrooms"][room]["name"] = ""
+        a.store.members["chatrooms"][room]["members"].pop("wxid_new", None)
+        a._api.snapshot = current_snapshot(a, {"wxid_new3": "孙七"})
+        a._api.snapshot["name"] = ""
+        self.run_src_with_tasks(a, notice("jw6b"))
+        check(
+            "group name fallback 本群",
+            len(a._api.texts) == 3 and "加入本群" in a._api.texts[-1][1],
+        )
+
+        # 基线落盘失败 ⇒ 不发欢迎 (至多一次, 绝不重复)
+        a._welcome_last_check.clear()
+        a._api.snapshot = current_snapshot(a, {"wxid_new2": "赵六"})
+        a.store.fail_members = True
+        self.run_src_with_tasks(a, notice("jw7"))
+        check("baseline save failure blocks send", len(a._api.texts) == 3)
+        a.store.fail_members = False
+
+        # 静默时段: 不发, 但基线照常推进
+        import time as _time
+
+        a._welcome_last_check.clear()
+        a._join_welcome_raw = {
+            "enabled": True,
+            "mode": "whitelist",
+            "quietHours": [_time.localtime().tm_hour],
+        }
+        a._api.snapshot = current_snapshot(a, {"wxid_q": "静默"})
+        self.run_src_with_tasks(a, notice("jw8"))
+        check(
+            "quiet hour advances baseline silently",
+            len(a._api.texts) == 3
+            and "wxid_q" in a.store.members["chatrooms"][room]["members"],
         )
 
         failed = [name for name, ok in cases if not ok]

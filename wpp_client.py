@@ -18,6 +18,8 @@ from typing import Any
 import aiohttp
 from astrbot import logger
 
+from .wpp_messages import SYSTEM_SENDERS
+
 # P2-3: 文件下载大小上限 (200MB, 与视频一致), 防超大文件撑爆内存
 MAX_FILE_BYTES = 200 * 1024 * 1024
 
@@ -467,6 +469,71 @@ class WppClient:
             )
         return profile
 
+    async def fetch_group_snapshot(self, chatroom_id: str) -> dict | None:
+        """强拉一次群名 + 完整成员表 (v0.9.0 进群欢迎用)。
+
+        与 :meth:`get_group_profile` 的区别是**读写都不碰 30 分钟缓存**：
+        欢迎语必须看到「此刻」的成员表才能 diff 出新人。语义：
+
+        * 成员查询失败 / 返回空 ⇒ ``None``。空成员表**不是**「群里没人了」，
+          而是 vendor 没给数据 —— 调用方绝不能拿它当基线，否则会把全群当新人。
+        * 群名查询失败不影响结果 (返回 ``name=""``，文案里写「本群」)。
+        * 过滤 ``@chatroom`` / ``gh_`` 公众号 / 微信内置系统号，只留真人。
+
+        返回 ``{"name": str, "members": {wxid: nick}, "member_count": int}``。
+        """
+        chatroom_id = str(chatroom_id or "").strip()
+        if not chatroom_id.endswith("@chatroom"):
+            return None
+
+        name = ""
+        try:
+            info = await self._post(
+                "/Group/GetChatRoomInfoDetail",
+                {"QID": chatroom_id},
+                max_retries=0,
+                timeout=GROUP_INFO_TIMEOUT_SECONDS,
+            )
+            data = info.get("Data") or {}
+            if isinstance(data, dict):
+                for key in ("NickName", "DisplayName", "Remark"):
+                    name = self._nick_value(data.get(key))
+                    if name:
+                        break
+        except Exception as e:  # noqa: BLE001 - 群名非必需
+            logger.debug(f"[WPP] 群名查询失败 {chatroom_id}: {e}")
+
+        try:
+            resp = await self._post(
+                "/Group/GetChatRoomMemberDetail",
+                {"QID": chatroom_id},
+                max_retries=0,
+                timeout=GROUP_INFO_TIMEOUT_SECONDS,
+            )
+        except Exception as e:  # noqa: BLE001 - 成员失败 ⇒ 调用方放弃本次 diff
+            logger.debug(f"[WPP] 群成员快照失败 {chatroom_id}: {e}")
+            return None
+        raw_members = self._parse_group_members(resp)
+        members = {
+            uid: nick
+            for uid, nick in raw_members.items()
+            if uid
+            and not uid.endswith("@chatroom")
+            and not uid.startswith("gh_")
+            and uid not in SYSTEM_SENDERS
+        }
+        if not members:
+            logger.debug(
+                f"[WPP] 群成员快照为空, 当作失败: {chatroom_id} raw={len(raw_members)}"
+            )
+            return None
+
+        now = time.monotonic()
+        for uid, nick in members.items():
+            if nick:
+                self._nickname_cache[(chatroom_id, uid)] = (nick, now)
+        return {"name": name, "members": members, "member_count": len(members)}
+
     async def _group_member_nickname(self, chatroom_id: str, wxid: str) -> str:
         try:
             resp = await self._post(
@@ -732,9 +799,21 @@ class WppClient:
         return False, resp
 
     # ------------------------------------------------------------------ 发送
-    async def send_text(self, to_wxid: str, content: str, ats: list[str] | None = None) -> dict:
-        """POST /api/Msg/SendTxt — 发文本。群@ 用 ats (wxid 列表, 逗号串)。"""
-        if self.should_skip_repeat(to_wxid, content):
+    async def send_text(
+        self,
+        to_wxid: str,
+        content: str,
+        ats: list[str] | None = None,
+        *,
+        bypass_repeat_guard: bool = False,
+    ) -> dict:
+        """POST /api/Msg/SendTxt — 发文本。群@ 用 ats (wxid 列表, 逗号串)。
+
+        ``bypass_repeat_guard`` 只给肯定要发的系统文案用（进群欢迎语：短时间内
+        连进两个同名新人时，模板文本可能完全相同，不能当成 LLM 复读拦掉）。
+        AI 回复不传，保持原复读保护。
+        """
+        if not bypass_repeat_guard and self.should_skip_repeat(to_wxid, content):
             return {"Code": 0, "Skipped": True, "Reason": "outbound_repeat_guard"}
         body: dict = {"ToWxid": to_wxid, "Content": content, "Type": 1}
         if ats:

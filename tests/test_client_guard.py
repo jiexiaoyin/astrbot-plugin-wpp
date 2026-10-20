@@ -97,6 +97,66 @@ class TestGroupProfile(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok)
 
 
+class TestGroupSnapshot(unittest.IsolatedAsyncioTestCase):
+    """v0.9.0: 进群欢迎用的无缓存成员快照。"""
+
+    def _client(self):
+        return client_mod.WppClient("http://127.0.0.1:18062", "token")
+
+    @staticmethod
+    def _info():
+        return {"Code": 0, "Data": {"NickName": "调试群"}}
+
+    @staticmethod
+    def _members(items):
+        return {"Code": 0, "Data": {"NewChatroomData": {"ChatRoomMember": items}}}
+
+    async def test_snapshot_filters_non_humans_and_skips_cache(self):
+        client = self._client()
+        members = self._members([
+            {"UserName": "wxid_a", "NickName": "张三"},
+            {"UserName": "123@chatroom", "NickName": "别的群"},
+            {"UserName": "gh_news", "NickName": "公众号"},
+            {"UserName": "weixin", "NickName": "微信团队"},
+        ])
+        with patch.object(
+            client, "_post", AsyncMock(side_effect=[self._info(), members])
+        ) as post:
+            snap = await client.fetch_group_snapshot("9@chatroom")
+        self.assertEqual(snap["name"], "调试群")
+        self.assertEqual(snap["members"], {"wxid_a": "张三"})
+        self.assertEqual(snap["member_count"], 1)
+        # 不写 30 分钟群资料缓存
+        self.assertEqual(client._group_cache, {})
+        # 第二次仍强拉, 不复用缓存
+        with patch.object(
+            client, "_post", AsyncMock(side_effect=[self._info(), members])
+        ) as post2:
+            await client.fetch_group_snapshot("9@chatroom")
+        self.assertEqual(post2.await_count, 2)
+        self.assertEqual(post.await_count, 2)
+
+    async def test_empty_members_is_failure(self):
+        client = self._client()
+        with patch.object(
+            client, "_post", AsyncMock(side_effect=[self._info(), self._members([])])
+        ):
+            self.assertIsNone(await client.fetch_group_snapshot("9@chatroom"))
+
+    async def test_vendor_failure_returns_none(self):
+        client = self._client()
+        with patch.object(
+            client, "_post", AsyncMock(side_effect=[RuntimeError("info"), RuntimeError("down")])
+        ):
+            self.assertIsNone(await client.fetch_group_snapshot("9@chatroom"))
+
+    async def test_non_chatroom_makes_no_call(self):
+        client = self._client()
+        with patch.object(client, "_post", AsyncMock()) as post:
+            self.assertIsNone(await client.fetch_group_snapshot("wxid_friend"))
+        post.assert_not_awaited()
+
+
 class TestOutboundGuard(unittest.IsolatedAsyncioTestCase):
     async def test_send_interval_serializes_same_session(self):
         client = client_mod.WppClient(
@@ -141,6 +201,29 @@ class TestOutboundGuard(unittest.IsolatedAsyncioTestCase):
             third = await client.send_text("wxid_a", "收到")
         self.assertEqual(post.await_count, 2)
         self.assertTrue(third.get("Skipped"))
+
+    async def test_bypass_repeat_guard_for_welcome(self):
+        """欢迎语不受复读保护: 三次同文都要真发, 且 At 正确带入。"""
+        client = client_mod.WppClient(
+            "http://127.0.0.1:18062",
+            "token",
+            repeat_guard_window=300,
+            repeat_guard_limit=1,
+        )
+        bodies = []
+
+        async def fake_post(endpoint, body, *a, **k):
+            bodies.append(body)
+            return {"Code": 0}
+
+        with patch.object(client, "_post_impl", fake_post):
+            for _ in range(3):
+                await client.send_text(
+                    "9@chatroom", "欢迎 @张三 加入本群！", ["wxid_a"],
+                    bypass_repeat_guard=True,
+                )
+        self.assertEqual(len(bodies), 3)
+        self.assertEqual(bodies[0]["At"], "wxid_a")
 
     async def test_repeat_guard_scoped_by_session(self):
         client = client_mod.WppClient(

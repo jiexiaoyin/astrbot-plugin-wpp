@@ -131,6 +131,11 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
   `add/del/list`（批量），运行时立即生效并持久化；手动编辑
   `wpp_whitelist.json` 也会在约 3 秒内热加载。完整列表见
   [命令参考](#-命令参考)。
+- **进群欢迎语（v0.9.0）**：群成员变动系统通知触发一次成员表 diff，
+  真正新增的成员发模板欢迎语（可 @ 新人）。纯模板、无 LLM 润色；
+  默认关闭，配置在 `wpp_whitelist.json` 的 `join_welcome` 段，3 秒热更新；
+  `/welcome on|off|list` 管理。首次同步只建基线；`maxBatch` / 30 秒节流 /
+  静默时段防刷屏；先落盘基线再发送，至多一次。
 - **多消息遍历**：vendor 一次推多条不遗漏
 - **自动心跳**：账号离线自动拉上线
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
@@ -185,6 +190,26 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 | `/proactive add\|del <群ID>...` | 显式主动候选 | 群白名单已自动纳入；仅未配置群白名单时作补充；`list` 查看 |
 | `/mode atbot\|none\|all` | 群消息准入 | `atbot`=只放行 @；`none`=忽略群；`all`=放行全部群消息（观察，不强制回复） |
 | `/at on\|off` | 必须 @ | 群聊是否必须 @ 机器人才放行；主动候选群优先 |
+| `/welcome on\|off\|list` | 进群欢迎 | 开关/查看生效群与基线人数；配置见 `join_welcome` 段 |
+
+**进群欢迎配置**（`wpp_whitelist.json`，3 秒热更新）：
+
+```json
+"join_welcome": {
+  "enabled": true,
+  "mode": "whitelist",
+  "groups": [],
+  "template": "欢迎 @{name} 加入{group}！",
+  "mention": true,
+  "quietHours": [],
+  "maxBatch": 3
+}
+```
+
+`mode`：`whitelist`（动态跟随群白名单，推荐）/ `allowlist` / `blocklist` /
+`all`；群黑名单永远排除。`{name}` 为新人昵称（多人用「、」连接），
+`{group}` 为群名（查不到写「本群」）。首次同步某群只建基线；
+一次 diff 超过 `maxBatch` 人视为基线重建，不发欢迎；同群 30 秒内只抓一次。
 
 **约定**：
 
@@ -243,13 +268,15 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 | `wpp_adapter.py` | 平台适配器 (账号管理器 + 账号解析 + 生命周期 + 发送路由) |
 | `wpp_account.py` | WppAccount 类 (单账号: WS + 有界队列/worker + 白名单 + 去重) |
 | `wpp_messages.py` | vendor 消息解析/转换 (纯函数, 含非消息事件过滤) |
+| `wpp_join_events.py` | 进群/退群系统通知识别 (纯函数, 递归找原文) |
+| `wpp_join_welcome.py` | 进群欢迎配置/diff/文案渲染 (纯函数) |
 | `wpp_appmsg.py` | appmsg/XML 卡片结构化解析 (链接/小程序/位置/名片/合并转发/接龙) |
 | `wpp_policy.py` | 白名单/群准入策略 (纯函数, 群白名单自动主动候选) |
 | `wpp_heartflow.py` | 群白名单 → Heartflow `chat_whitelist` 同步 (auto/custom + 子集不变量) |
 | `wpp_media.py` | 图片/文件/语音/视频下载 + 消息链富化 (支持懒加载选择性下载) |
 | `wpp_send.py` | 出站消息链发送 + 长文本分片 |
 | `wpp_commands.py` | filehelper 管理命令 + 动态 `/help` |
-| `wpp_storage.py` | 运行时数据持久化 (白名单/去重, 原子写) |
+| `wpp_storage.py` | 运行时数据持久化 (白名单/去重/成员基线, 原子写) |
 | `wpp_client.py` | WPP vendor HTTP/WS API 封装 (retry + 超时) |
 | `wpp_event.py` | 消息事件 (重写 send 真正发送到微信) |
 | `tests/` | 单元测试 (pytest, 在 AstrBot 容器内运行) |
@@ -258,8 +285,8 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 | `.astrbot-plugin/i18n/` | Dashboard 页面标题与显示名 (zh-CN / en-US) |
 | `logo.png` | 插件 + 平台适配器图标 |
 
-运行时数据（白名单、去重状态）写在 AstrBot 标准插件数据目录：
-`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/`。
+运行时数据（白名单、去重状态、群成员基线 `members.json`）写在 AstrBot 标准
+插件数据目录：`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/`。
 旧版写在插件目录 `accounts/` 下的数据会在启动时自动迁移。
 
 ---

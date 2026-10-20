@@ -11,9 +11,13 @@ sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 commands_mod = importlib.import_module("astrbot-plugin-wpp.wpp_commands")
+join_welcome = importlib.import_module("astrbot-plugin-wpp.wpp_join_welcome")
 
 
 def make_account(**overrides):
+    welcome = overrides.pop("welcome", {})
+    welcome_groups = overrides.pop("welcome_groups", [])
+    welcome_baselines = overrides.pop("welcome_baselines", {})
     data = dict(
         account_id="test",
         allow_users={"wxid_a", "g1@chatroom", "g2@chatroom"},
@@ -22,9 +26,24 @@ def make_account(**overrides):
         proactive_groups={"g2@chatroom", "g3@chatroom"},
         group_reply="atbot",
         require_at_mention=False,
+        join_welcome=welcome,
     )
     data.update(overrides)
-    return SimpleNamespace(**data)
+    acct = SimpleNamespace(**data)
+    acct.join_welcome_cfg = lambda: join_welcome.resolve_cfg(acct.join_welcome)
+    acct.join_welcome_groups = lambda: list(welcome_groups)
+    acct.join_welcome_status = lambda: {
+        "cfg": acct.join_welcome_cfg(),
+        "groups": list(welcome_groups),
+        "baselines": dict(welcome_baselines),
+    }
+
+    def set_enabled(enabled):
+        acct.join_welcome = dict(acct.join_welcome or {}, enabled=bool(enabled))
+        return True
+
+    acct.set_join_welcome_enabled = set_enabled
+    return acct
 
 
 class TestHelp(unittest.IsolatedAsyncioTestCase):
@@ -92,6 +111,50 @@ class TestHelp(unittest.IsolatedAsyncioTestCase):
         text = await self._help("/help nope")
         self.assertIn("未找到命令: /nope", text)
         self.assertIn("/help", text)
+
+    async def test_help_shows_welcome_summary(self):
+        text = await self._help("/help")
+        self.assertIn("进群欢迎：关闭", text)
+        self.assertIn("/welcome on/off/list", text)
+
+    async def test_help_welcome_detail(self):
+        text = await self._help("/help welcome")
+        self.assertTrue(text.startswith("【/welcome"))
+        self.assertIn("进群欢迎语开关", text)
+
+    async def test_welcome_list(self):
+        text = await self._help(
+            "/welcome list",
+            make_account(
+                welcome={"enabled": True, "mode": "whitelist", "template": "hi {name}"},
+                welcome_groups=["g1@chatroom"],
+                welcome_baselines={"g1@chatroom": 12},
+            ),
+        )
+        self.assertIn("进群欢迎：开启", text)
+        self.assertIn("模式：whitelist", text)
+        self.assertIn("模板：hi {name}", text)
+        self.assertIn("g1@chatroom", text)
+        self.assertIn("基线 12 人", text)
+
+    async def test_welcome_on_off(self):
+        acct = make_account(welcome={"enabled": False})
+        replies = []
+
+        async def reply(text):
+            replies.append(text)
+
+        cmds = commands_mod.FilehelperCommands(acct)
+        await cmds.handle("/welcome on", reply)
+        self.assertIn("已开启", replies[-1])
+        self.assertTrue(acct.join_welcome_cfg()["enabled"])
+        await cmds.handle("/welcome off", reply)
+        self.assertIn("已关闭", replies[-1])
+        self.assertFalse(acct.join_welcome_cfg()["enabled"])
+
+    async def test_welcome_bad_arg(self):
+        text = await self._help("/welcome banana")
+        self.assertIn("用法: /welcome on|off|list", text)
 
     def test_plugin_version_reads_metadata(self):
         self.assertNotEqual(commands_mod.plugin_version(), "dev")

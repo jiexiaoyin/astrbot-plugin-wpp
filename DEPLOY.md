@@ -159,6 +159,18 @@ git push origin master
 确认部署目录的 `metadata.yaml` 已更新、AstrBot 已重启，并检查启动日志
 `Plugin astrbot-plugin-wpp (x.y.z)`。
 
+### 进群欢迎语没有发
+1. 文件传输助手发 `/welcome list`：确认已开启、模式、生效群、每群基线人数；
+2. **首次同步只建基线**，不会欢迎现有成员 → 日志 `进群欢迎基线已建立 members=N`；
+3. `join_welcome.enabled` 默认 false；改 `wpp_whitelist.json` 后约 3 秒热更新
+   → 日志 `进群欢迎配置已热更新`；
+4. 同一群 30 秒内只抓一次成员表 → 日志 `成员变动节流跳过`；
+5. 一次 diff 出的人数超过 `maxBatch`（默认 3）视为基线重建，不发
+   → 日志 `成员变动但不发欢迎语 added=N (…超过 maxBatch…)`；
+6. 静默时段（`quietHours`）不发，但基线照常推进；
+7. 基线落盘失败会放弃发送（至多一次语义）→ 日志 `保存群成员基线失败`；
+8. vendor 漏推进群通知时那次进群不会有欢迎语（事件驱动，不轮询）。
+
 ### WS 连不上 / 断连
 1. 确认 `wpp_ws_url` 可达：AstrBot 容器内 `curl http://<vendor>:<ws端口>/ws/sync` 应返回 401（服务在）
 2. 容器内访问 vendor 用宿主机 IP 或公网域名（`127.0.0.1` 是容器自己，不通）

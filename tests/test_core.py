@@ -426,6 +426,34 @@ class TestStorage(unittest.TestCase):
                 self.assertEqual(cfg["allow_users"], ["u1"])
                 self.assertTrue(store.config_path.exists())
 
+    def test_members_roundtrip(self):
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
+                store = storage.AccountStore("acct_members")
+                state = {
+                    "version": 1,
+                    "updated_at": 10,
+                    "chatrooms": {
+                        "1@chatroom": {
+                            "name": "群",
+                            "synced_at": 5,
+                            "members": {"wxid_a": {"nick": "张三", "first_seen": 5}},
+                        }
+                    },
+                }
+                store.save_members(state)
+                loaded = store.load_members()
+                self.assertEqual(
+                    loaded["chatrooms"]["1@chatroom"]["members"]["wxid_a"]["nick"], "张三"
+                )
+
+    def test_members_corrupt_file_falls_back(self):
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
+                store = storage.AccountStore("acct_bad")
+                store.members_path.write_text("{not json", encoding="utf-8")
+                self.assertEqual(store.load_members()["chatrooms"], {})
+
     def test_safe_account_id(self):
         self.assertEqual(storage.safe_account_id("../evil/x"), "evil_x")
         self.assertEqual(storage.safe_account_id(""), "account")

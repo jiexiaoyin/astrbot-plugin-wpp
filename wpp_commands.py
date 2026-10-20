@@ -45,6 +45,7 @@ class FilehelperCommands:
             ("/proactive add/del/list 群ID [可多个]", "显式补充主动候选", self._proactive),
             ("/mode atbot/none/all", "群消息准入模式", self._mode),
             ("/at on/off", "群聊是否必须 @ 才回复", self._at),
+            ("/welcome on/off/list", "进群欢迎语开关与生效群", self._welcome),
             ("/help [命令]", "显示帮助或单条命令详情", self._help),
         ]
 
@@ -351,6 +352,50 @@ class FilehelperCommands:
                 f"用法: /at on|off\n当前: {'on (必须@)' if acct.require_at_mention else 'off (不必@)'}"
             )
 
+    async def _welcome(self, args: list[str], reply) -> None:
+        """进群欢迎语开关/查看 (配置本体在 wpp_whitelist.json 的 join_welcome 段)。"""
+        acct = self.account
+        action = (args[0] if args else "list").strip().lower()
+        if action in ("on", "1", "true"):
+            if acct.set_join_welcome_enabled(True):
+                cfg = acct.join_welcome_cfg()
+                await reply(
+                    f"✅ 进群欢迎已开启 (mode={cfg['mode']}，"
+                    f"生效 {len(acct.join_welcome_groups())} 群)"
+                )
+            else:
+                await reply("❌ 进群欢迎开启失败：运行时配置写入失败，详见日志。")
+            return
+        if action in ("off", "0", "false"):
+            if acct.set_join_welcome_enabled(False):
+                await reply("✅ 进群欢迎已关闭")
+            else:
+                await reply("❌ 进群欢迎关闭失败：运行时配置写入失败，详见日志。")
+            return
+        if action not in ("list", ""):
+            await reply("用法: /welcome on|off|list")
+            return
+
+        status = acct.join_welcome_status()
+        cfg = status["cfg"]
+        groups = status["groups"]
+        baselines = status["baselines"]
+        quiet = ", ".join(str(h) for h in sorted(cfg["quietHours"])) or "无"
+        lines = [
+            f"👋 进群欢迎：{'开启' if cfg['enabled'] else '关闭'}",
+            f"模式：{cfg['mode']}",
+            f"模板：{cfg['template']}",
+            f"@新人：{'开' if cfg['mention'] else '关'}，单次上限：{cfg['maxBatch']}",
+            f"静默小时：{quiet}",
+            f"生效群（{len(groups)}）：",
+        ]
+        if not groups:
+            lines.append("(无)")
+        else:
+            for group in groups:
+                lines.append(f"- {group}  基线 {baselines.get(group, 0)} 人")
+        await reply("\n".join(lines))
+
     async def _help(self, args: list[str], reply) -> None:
         acct = self.account
         arg = (args[0] if args else "").strip()
@@ -374,6 +419,7 @@ class FilehelperCommands:
 
         private = [u for u in acct.allow_users if not str(u).endswith("@chatroom")]
         groups = [u for u in acct.allow_users if str(u).endswith("@chatroom")]
+        welcome_cfg = acct.join_welcome_cfg()
         explicit = sorted(acct.proactive_groups)
         # 群白名单非空时, 显式候选也必须先过群白名单才算真正生效;
         # group_reply=none 会整体关闭群消息准入, 黑名单群也不会生效。
@@ -394,12 +440,16 @@ class FilehelperCommands:
             f"主动候选：显式 {len(explicit)} 个，生效 {len(effective)} 个",
             f"群模式：{acct.group_reply}",
             f"必须@：{'开启' if acct.require_at_mention else '关闭'}",
+            (
+                f"进群欢迎：{'开启' if welcome_cfg['enabled'] else '关闭'}"
+                f"（{welcome_cfg['mode']}，{len(acct.join_welcome_groups())} 群）"
+            ),
             "",
             "────────────────",
         ]
         sections = (
             ("私聊", ("/user", "/block")),
-            ("群聊", ("/group", "/blacklist", "/proactive", "/mode", "/at")),
+            ("群聊", ("/group", "/blacklist", "/proactive", "/mode", "/at", "/welcome")),
             ("帮助", ("/help",)),
         )
         for title, prefixes in sections:

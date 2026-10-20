@@ -6,6 +6,7 @@ AstrBot 插件规范: 运行时数据放 `data/plugin_data/<plugin_name>/`, 不�
 布局:
   data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/wpp_whitelist.json
   data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/dedup.json
+  data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/members.json  (v0.9.0 群成员基线)
 
 兼容: 旧版本把白名单写在插件目录 `accounts/<account_id>/`, 读取时自动回退并迁移到新目录。
 """
@@ -56,6 +57,7 @@ class AccountStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.dir / "wpp_whitelist.json"
         self.dedup_path = self.dir / "dedup.json"
+        self.members_path = self.dir / "members.json"
         self._legacy_dir = legacy_accounts_dir() / self.account_id
 
     # ------------------------------------------------------------------ 白名单/策略
@@ -99,6 +101,20 @@ class AccountStore:
         self._atomic_write(
             self.dedup_path,
             json.dumps({"ids": ids, "saved_at": int(time.time())}, ensure_ascii=False),
+        )
+
+    # ------------------------------------------------------------------ 群成员基线
+    def load_members(self) -> dict:
+        """读取群成员基线 (v0.9.0 进群欢迎)；缺失/损坏返回空状态。"""
+        from .wpp_join_welcome import normalize_state
+
+        return normalize_state(self._read_json(self.members_path))
+
+    def save_members(self, state: dict) -> None:
+        """原子写成员基线。失败向上抛 —— 调用方据此放弃发送欢迎语。"""
+        self._atomic_write(
+            self.members_path,
+            json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True),
         )
 
     # ------------------------------------------------------------------ 内部

@@ -142,6 +142,33 @@ class TestWppAccountIsolation(unittest.TestCase):
                 self.assertIn("wxid_bad", reloaded.block_users)
                 self.assertFalse(reloaded.policy_snapshot().block_users == set())
 
+    def test_save_policy_preserves_join_welcome(self):
+        """v0.9.0: /group add 等命令整份重写时不能抹掉 join_welcome 段。"""
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
+                acct = WppAccount(FakePlatform(), "acct_jw", "tok", "http://x:1", "")
+                acct.store.save_config({
+                    "allow_users": [],
+                    "join_welcome": {"enabled": True, "mode": "whitelist"},
+                })
+                acct._load_policy_file()
+                acct.block_users.add("wxid_bad")
+                acct.save_policy()
+                raw = json.loads(acct.store.config_path.read_text(encoding="utf-8"))
+                self.assertTrue(raw["join_welcome"]["enabled"])
+                self.assertEqual(raw["join_welcome"]["mode"], "whitelist")
+                self.assertIn("wxid_bad", raw["block_users"])
+
+    def test_set_join_welcome_enabled_persisted(self):
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
+                acct = WppAccount(FakePlatform(), "acct_jw2", "tok", "http://x:1", "")
+                self.assertTrue(acct.set_join_welcome_enabled(True))
+                raw = json.loads(acct.store.config_path.read_text(encoding="utf-8"))
+                self.assertTrue(raw["join_welcome"]["enabled"])
+                reloaded = WppAccount(FakePlatform(), "acct_jw2", "tok", "http://x:1", "")
+                self.assertTrue(reloaded.join_welcome_cfg()["enabled"])
+
     def test_platform_meta_id(self):
         """平台 meta().id 为实例 id。"""
         plat = FakePlatform(instance_id="wpp_custom")
