@@ -484,11 +484,14 @@ class WppAccount:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[WPP:{self.account_id}] 读取配置文件失败: {e}")
             return
+        if not isinstance(data, dict):
+            data = {}
+        # 进群欢迎配置段: 原样保存 (每次用 resolve_cfg 现算)。
+        # 文件里**删掉**这一段 = 回到默认关闭 (fail-closed), 不能沿用旧配置。
+        jw = data.get("join_welcome")
+        self._join_welcome_raw = dict(jw) if isinstance(jw, dict) else {}
         if not data:
             return
-        # 进群欢迎配置段: 原样保存 (每次用 resolve_cfg 现算), 文件里没有则保持现状。
-        if isinstance(data.get("join_welcome"), dict):
-            self._join_welcome_raw = dict(data["join_welcome"])
         arr = data.get("allow_users", [])
         if isinstance(arr, list):
             self.allow_users.update(str(u).strip() for u in arr if str(u).strip())

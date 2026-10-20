@@ -159,6 +159,18 @@ class TestWppAccountIsolation(unittest.TestCase):
                 self.assertEqual(raw["join_welcome"]["mode"], "whitelist")
                 self.assertIn("wxid_bad", raw["block_users"])
 
+    def test_removing_join_welcome_section_disables(self):
+        """热更新时删掉 join_welcome 段 ⇒ 回到默认关闭, 不沿用旧配置。"""
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
+                acct = WppAccount(FakePlatform(), "acct_jw3", "tok", "http://x:1", "")
+                acct.store.save_config({"join_welcome": {"enabled": True, "mode": "all"}})
+                acct._load_policy_file()
+                self.assertTrue(acct.join_welcome_cfg()["enabled"])
+                acct.store.save_config({"allow_users": []})
+                acct._load_policy_file()
+                self.assertFalse(acct.join_welcome_cfg()["enabled"])
+
     def test_set_join_welcome_enabled_persisted(self):
         with tempfile.TemporaryDirectory() as d:
             with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
