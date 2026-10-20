@@ -11,7 +11,7 @@ sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 join_events = importlib.import_module("astrbot-plugin-wpp.wpp_join_events")
 
-ROOM = "12345678901@chatroom"
+ROOM = "10000000001@chatroom"
 
 
 def src(content="", *, msg_type=None, chatroom=ROOM, **extra):

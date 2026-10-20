@@ -535,7 +535,7 @@ class TestMainPathSmoke(unittest.TestCase):
         def check(name, passed):
             cases.append((name, bool(passed)))
 
-        room = "12345678901@chatroom"
+        room = "10000000001@chatroom"
         whitelist = {room}
 
         def notice(msg_id):

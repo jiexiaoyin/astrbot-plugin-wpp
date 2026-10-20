@@ -11,8 +11,8 @@ sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 jw = importlib.import_module("astrbot-plugin-wpp.wpp_join_welcome")
 
-ROOM = "12345678901@chatroom"
-OTHER = "98765432109@chatroom"
+ROOM = "10000000001@chatroom"
+OTHER = "10000000002@chatroom"
 
 
 def cfg(**kw):
