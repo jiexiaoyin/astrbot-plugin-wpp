@@ -19,6 +19,7 @@ from astrbot.api.web import error_response, json_response, request
 
 from .wpp_client import WppClient
 from .wpp_commands import plugin_version
+from .wpp_constants import PLATFORM_NAME
 from .wpp_heartflow import configure as configure_heartflow_sync
 from .wpp_heartflow import resolve_heartflow_groups
 from .wpp_media import enrich_media
@@ -79,7 +80,7 @@ class WppPlugin(Star):
         `collect_initial_request` 之前执行, 补齐图片/文件/视频, 避免群里
         每条消息都提前下载媒体。语音已在适配器层即时下载 (保证 STT)。
         """
-        if event.get_platform_name() != "wpp":
+        if event.get_platform_name() != PLATFORM_NAME:
             return
         account = event.get_extra("_wpp_lazy_media")
         if account is None:
@@ -374,7 +375,7 @@ class WppPlugin(Star):
             insts = getattr(pm, "platform_insts", []) if pm else []
             return [
                 inst for inst in insts
-                if getattr(inst, "meta", None) and inst.meta().name == "wpp"
+                if getattr(inst, "meta", None) and inst.meta().name == PLATFORM_NAME
             ]
         except Exception:  # noqa: BLE001
             return []

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from astrbot import logger
 
+from .wpp_constants import PLATFORM_NAME
 from .wpp_messages import split_args
 
 if TYPE_CHECKING:
@@ -226,7 +227,7 @@ class FilehelperCommands:
         targets = split_args(args[1:])
 
         def _umo(group_id: str) -> str:
-            pid = str(getattr(acct.platform, "instance_id", "") or "wpp")
+            pid = str(getattr(acct.platform, "instance_id", "") or PLATFORM_NAME)
             return f"{pid}:GroupMessage:{group_id}"
 
         auto_groups = sorted(

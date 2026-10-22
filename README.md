@@ -1,6 +1,6 @@
 # astrbot-plugin-wpp
 
-**AstrBot 微信 WPP (WeChatPadPro) 平台适配器 — 让微信成为 AstrBot 的一等平台**
+**AstrBot 个人微信（Pad协议）适配器 (WeChatPadPro) — 让微信成为 AstrBot 的一等平台**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
@@ -10,7 +10,8 @@
 [![Open Issues](https://img.shields.io/github/issues/jiexiaoyin/astrbot-plugin-wpp)](https://github.com/jiexiaoyin/astrbot-plugin-wpp/issues)
 [![Last commit](https://img.shields.io/github/last-commit/jiexiaoyin/astrbot-plugin-wpp)](https://github.com/jiexiaoyin/astrbot-plugin-wpp/commits/master)
 
-AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
+AstrBot 个人微信（Pad协议）适配器 (WeChatPadPro)，Dashboard 显示名
+**个人微信（Pad协议）**。
 
 **让微信成为 AstrBot 的一等平台**：微信消息 → WPP vendor → 本适配器 → AstrBot 核心 (LLM/命令/插件)，回复自动回微信。
 
@@ -44,7 +45,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
    docker cp astrbot-plugin-wpp astrbot:/AstrBot/data/plugins/
    docker restart astrbot
    ```
-2. **添加平台**：Dashboard → 平台适配器 → 添加「微信 WPP」，至少填写：
+2. **添加平台**：Dashboard → 平台适配器 → 添加「个人微信（Pad协议）」，至少填写：
    - `wpp_base_url`：vendor HTTP 地址，如 `http://<vendor-ip>:28062`
    - `wpp_auth_token`：vendor authcode（一个实例对应一个微信账号）
    - `wpp_ws_url`：vendor WS 地址，如 `wss://<vendor-domain>/ws/sync`
@@ -89,7 +90,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 
 ### 👥 一个实例一个微信账号
 - **一个平台实例 = 一个 `wpp_auth_token`（X-Access-Token = authcode）= 一个微信账号**
-- 多账号请添加多个「微信 WPP」平台实例，`id` 唯一、各自填自己的 authcode
+- 多账号请添加多个「个人微信（Pad协议）」平台实例，`id` 唯一、各自填自己的 authcode
 - **每个实例独立**：WS 连接 / 白名单 / 群策略 / 黑名单 / 去重 / 机器人身份 / filehelper 命令
 - 同一 authcode 不允许被两个实例同时使用，后启动的实例会被拒绝
 
@@ -154,7 +155,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
     **打开插件UI界面**（打开的是第一页 `console`，即控制台）；
     也可进入插件详情 → 行为 → 页面条目 → 「打开」。
   - 控制台是**运行时策略的唯一日常入口**；vendor 地址/authcode、平台实例、
-    Heartflow 模式等仍在 Dashboard → 平台适配器 → 微信 WPP 配置中修改。
+    Heartflow 模式等仍在 Dashboard → 平台适配器 → 个人微信（Pad协议）配置中修改。
   - 适配器配置里的白名单/群策略字段是账号启动时的初始值；账号保存过策略后，
     以控制台持久化的运行时配置为准。
 - **WPP 账号诊断**：查看已配置账号在线状态，或用 X-Access-Token 查询
@@ -303,7 +304,7 @@ docker exec astrbot sh -c 'python3 -c "import aiohttp, websockets" || pip instal
 # 3. 重启 AstrBot 加载适配器
 docker restart astrbot
 
-# 4. Dashboard (http://<host>:6185) → 平台适配器 → 添加 "微信 WPP"
+# 4. Dashboard (http://<host>:6185) → 平台适配器 → 添加 "个人微信（Pad协议）"
 #    填配置 (见下表) → 保存启用
 
 # 5. 确认版本与启动状态
@@ -349,8 +350,8 @@ docker exec -w /AstrBot/data/plugins astrbot \
 > ⚠️ 上表中的白名单/群策略字段是账号启动时的初始值。日常增删白名单、切换群模式请使用 **WPP 控制台**；账号保存过运行时策略后，以控制台写入的 `wpp_whitelist.json` 为准，避免两处配置产生歧义。
 
 ### 👥 多账号（多个平台实例）
-**一个微信账号 = 一个 authcode = 一个「微信 WPP」平台实例。** 多账号时在
-Dashboard 再添加一个「微信 WPP」平台实例：
+**一个微信账号 = 一个 authcode = 一个「个人微信（Pad协议）」平台实例。** 多账号时在
+Dashboard 再添加一个「个人微信（Pad协议）」平台实例：
 
 ```text
 平台实例 wpp           (authcode A) ── 微信账号 A
@@ -531,7 +532,7 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 回退为普通文本。
 
 ### 多账号会互相影响吗
-不会。多账号 = 多个「微信 WPP」平台实例，每个实例独立 authcode、WS、白名单、
+不会。多账号 = 多个「个人微信（Pad协议）」平台实例，每个实例独立 authcode、WS、白名单、
 黑名单、群策略、去重和 filehelper 命令；filehelper 输出会带实例/账号标识
 （如 `【WPP 命令 · 账号 wpp-shop2】`）。管理员命令可用实例 id 指定目标。
 注意同一个 authcode 不能同时配到两个实例。
@@ -585,8 +586,12 @@ python -m compileall -q .
 升级插件只需替换插件目录并重启 AstrBot；白名单和去重数据保存在
 `data/plugin_data/astrbot-plugin-wpp/`，不会因替换插件文件丢失。
 
+> ⚠️ **v0.11.0 升级**：平台显示名改为 **个人微信（Pad协议）**。已有平台配置的
+> `type`/`id` 需从 `wpp` 改为 `个人微信（Pad协议）`，并同步迁移 UMO、会话/统计/
+> 偏好数据和 Heartflow 白名单；迁移步骤见 [DEPLOY.md](DEPLOY.md)。
+>
 > ⚠️ **v0.10.0 升级**：`wpp_accounts` 单实例多账号配置已移除。若旧配置里用了
-> 它，请为每个账号各建一个「微信 WPP」平台实例（`id` 唯一、各自填
+> 它，请为每个账号各建一个「个人微信（Pad协议）」平台实例（`id` 唯一、各自填
 > `wpp_auth_token`）。运行时数据目录按实例 id 隔离；需要沿用旧
 > `accounts/<旧账号 id>/` 下的白名单/去重数据时，把该目录改名为
 > `accounts/<新实例 id>/`（仅单账号升级且实例 id 仍为 `wpp` 时无需处理）。

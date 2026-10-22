@@ -40,7 +40,9 @@ class FakePlatform:
 
     def meta(self):
         from astrbot.api.platform import PlatformMetadata
-        return PlatformMetadata(name="wpp", description="t", id=self.instance_id)
+        return PlatformMetadata(
+            name=mod.PLATFORM_NAME, description="t", id=self.instance_id
+        )
 
     def commit_event(self, event):
         self.committed.append(event)
@@ -125,6 +127,16 @@ class TestAuthcodeLock(unittest.TestCase):
         self.assertEqual(len(adapter.accounts), 1)
         self.assertEqual(adapter.accounts[0].account_id, "wpp-one")
         self.assertEqual(len(adapter.get_stats()["accounts"]), 1)
+
+    def test_platform_metadata_name(self):
+        """AstrBot 4.29 的机器人列表/新增下拉直接显示适配器名。"""
+        adapter = WppPlatformAdapter(
+            {"id": "wpp-meta", "wpp_auth_token": "tok"}, {}, asyncio.Queue()
+        )
+        meta = adapter.meta()
+        self.assertEqual(meta.name, mod.PLATFORM_NAME)
+        self.assertEqual(meta.adapter_display_name, mod.PLATFORM_NAME)
+        self.assertEqual(meta.name, "个人微信（Pad协议）")
 
     def test_send_routing_uses_single_account(self):
         """所有会话回复都由本实例唯一的账号发送。"""

@@ -22,6 +22,8 @@ from typing import Any, Iterable
 from astrbot import logger
 from astrbot.api.star import get_astrbot_data_path
 
+from .wpp_constants import PLATFORM_NAME
+
 HEARTFLOW_PLUGIN_NAME = "astrbot_plugin_Heartflow"
 HEARTFLOW_CONFIG_FILENAME = "astrbot_plugin_Heartflow_config.json"
 
@@ -106,7 +108,7 @@ def collect_group_ids(
 
 
 def build_umos(platform_id: str, groups: Iterable[str]) -> list[str]:
-    pid = str(platform_id or "wpp").strip() or "wpp"
+    pid = str(platform_id or PLATFORM_NAME).strip() or PLATFORM_NAME
     return [
         f"{pid}:GroupMessage:{group}"
         for group in sorted({str(g).strip() for g in groups if str(g).strip()})

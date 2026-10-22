@@ -223,7 +223,7 @@ class TestSelectiveMedia(unittest.IsolatedAsyncioTestCase):
 
 
 class _FakeEvent:
-    def __init__(self, msg: AstrBotMessage, platform: str = "wpp"):
+    def __init__(self, msg: AstrBotMessage, platform: str = adapter.PLATFORM_NAME):
         self.message_obj = msg
         self.platform = platform
         self._extras = {}

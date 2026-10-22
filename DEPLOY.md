@@ -41,7 +41,7 @@ docker restart astrbot
 
 ## Dashboard 配置
 
-**平台适配器 → 添加 "微信 WPP"**：
+**平台适配器 → 添加 "个人微信（Pad协议）"**：
 
 ### 平台实例配置
 | 字段 | 值 | 说明 |
@@ -59,11 +59,12 @@ docker restart astrbot
 
 ### 多账号（多个平台实例）
 **一个平台实例 = 一个 `wpp_auth_token` = 一个微信账号。** Dashboard 里再添加一个
-「微信 WPP」平台实例，`id` 唯一（如 `wpp-shop2`），`wpp_auth_token` 填另一个账号：
+「个人微信（Pad协议）」平台实例，`id` 唯一（如 `个人微信（Pad协议）-shop2`），
+`wpp_auth_token` 填另一个账号：
 
 ```text
-平台实例 wpp           (authcode A) ── 微信账号 A
-平台实例 wpp-shop2     (authcode B) ── 微信账号 B
+平台实例 个人微信（Pad协议）          (authcode A) ── 微信账号 A
+平台实例 个人微信（Pad协议）-shop2    (authcode B) ── 微信账号 B
 ```
 
 同一个 authcode 不允许配到两个实例：后启动的实例会被拒绝
@@ -100,6 +101,66 @@ WPP 群白名单会自动同步到 Heartflow 的 `chat_whitelist`，有两种来
 - authcode 绑定哪个微信，就在 vendor 面板（API 端口）用哪个微信登录（iPad/Mac 扫码）
 - 账号登录后若 `online=false`，插件会自动调 AutoHeartBeat 拉上线
 - **WS 主通道**：连接建立即拉全量离线 + 实时消息；自动重连（指数退避 1s→30s），无需额外保活
+
+## v0.11.0 显示名迁移（`wpp` → `个人微信（Pad协议）`）
+
+AstrBot 4.29 的机器人列表标题显示配置 `id`、副标题显示 `type`，新增下拉显示
+适配器注册名，因此三处必须统一。升级到 v0.11.0 时按以下顺序迁移（先停容器，
+避免运行中的实例把旧配置写回）：
+
+```bash
+docker stop astrbot
+DATA=/opt/1panel/apps/astrbot/astrbot/data
+
+# 1. 备份配置/数据库/Heartflow/插件数据
+cp "$DATA/cmd_config.json" "/data/astrbot-cmd_config-$(date +%Y%m%d-%H%M%S).json"
+cp "$DATA/data_v4.db" "/data/astrbot-data_v4-$(date +%Y%m%d-%H%M%S).db"
+cp "$DATA/config/astrbot_plugin_Heartflow_config.json" "/data/astrbot-Heartflow-$(date +%Y%m%d-%H%M%S).json"
+cp -a "$DATA/plugin_data/astrbot-plugin-wpp" "/data/astrbot-wpp-plugin-data-$(date +%Y%m%d-%H%M%S)"
+```
+
+2. 把 `cmd_config.json` 中该平台对象的 `type`/`id` 从 `wpp` 改为
+   `个人微信（Pad协议）`（保留 UTF-8 BOM，建议用 Python 脚本读改写）。
+3. 迁移数据库 UMO/统计/会话/偏好（下面的 SQL 以 `sqlite3` 为例；字符串含中文，
+   用 Python `sqlite3` 执行更稳妥）：
+
+```sql
+UPDATE platform_stats SET platform_id='个人微信（Pad协议）' WHERE platform_id='wpp';
+UPDATE provider_stats SET umo='个人微信（Pad协议）:' || substr(umo, 5) WHERE umo LIKE 'wpp:%';
+UPDATE conversations SET platform_id='个人微信（Pad协议）' WHERE platform_id='wpp';
+UPDATE conversations SET user_id='个人微信（Pad协议）:' || substr(user_id, 5) WHERE user_id LIKE 'wpp:%';
+UPDATE preferences SET scope_id='个人微信（Pad协议）:' || substr(scope_id, 5) WHERE scope_id LIKE 'wpp:%';
+UPDATE umo_aliases SET umo='个人微信（Pad协议）:' || substr(umo, 5) WHERE umo LIKE 'wpp:%';
+-- 会话内容里模型工具回显的 UMO
+UPDATE conversations SET content=replace(content, 'wpp:FriendMessage:', '个人微信（Pad协议）:FriendMessage:');
+UPDATE conversations SET content=replace(content, 'wpp:GroupMessage:', '个人微信（Pad协议）:GroupMessage:');
+```
+
+`preferences` 中键为 `umop_config_routing` 的全局值若是
+`{"val":{"wpp:*:*":"default"}}`，需把键改成 `个人微信（Pad协议）:*:*`。
+
+4. Heartflow 配置里 `chat_whitelist` 的 `wpp:GroupMessage:*` 改成
+   `个人微信（Pad协议）:GroupMessage:*`（同步逻辑只替换当前平台前缀，
+   旧前缀不清理会残留）。
+5. 插件运行时目录按实例 id 净化命名：`个人微信（Pad协议）` → `accounts/Pad/`。
+   把 `$DATA/plugin_data/astrbot-plugin-wpp/accounts/wpp/` 改名为
+   `accounts/Pad/`；`webhooks/wpp.token` 可改名为 `webhooks/Pad.token`
+   （webhook 已退役，通常可忽略）。
+6. 部署 v0.11.0 代码并启动：
+
+```bash
+docker start astrbot
+docker logs --since 3m astrbot 2>&1 | grep -E '个人微信|WPP'
+```
+
+期望日志：
+
+```
+Loading IM platform adapter 个人微信（Pad协议）(个人微信（Pad协议）) ...
+[WPP] 账号已注册: id=个人微信（Pad协议） ...
+[WPP:个人微信（Pad协议）] 账号已在线: wxid=...
+[WPP:个人微信（Pad协议） WS] connected
+```
 
 ## 开发迭代流程
 

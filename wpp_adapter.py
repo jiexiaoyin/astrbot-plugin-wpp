@@ -47,6 +47,7 @@ for _noisy in ("websockets", "websockets.client", "websockets.protocol", "httpco
 from astrbot.core.platform.message_session import MessageSession
 
 from .wpp_account import WppAccount
+from .wpp_constants import PLATFORM_NAME
 from .wpp_event import WppMessageEvent
 from .wpp_heartflow import (
     HEARTFLOW_WHITELIST_MODES,
@@ -105,7 +106,7 @@ def _parse_account(platform_config: dict) -> dict | None:
     if not authcode:
         return None
     return {
-        "id": str(platform_config.get("id", "wpp") or "wpp"),
+        "id": str(platform_config.get("id", PLATFORM_NAME) or PLATFORM_NAME),
         "authcode": authcode,
         "allow_users": _as_csv(platform_config.get("wpp_allow_users", "")),
         "group_reply": str(platform_config.get("wpp_group_reply", "atbot") or "atbot"),
@@ -210,9 +211,9 @@ WPP_CONFIG_METADATA = {
 
 
 @register_platform_adapter(
-    "wpp",
-    "微信 WPP 适配器 (WeChatPadPro)",
-    adapter_display_name="微信 WPP",
+    PLATFORM_NAME,
+    "个人微信（Pad协议）适配器 (WeChatPadPro)",
+    adapter_display_name=PLATFORM_NAME,
     logo_path="logo.png",
     default_config_tmpl={
         "wpp_base_url": "http://127.0.0.1:18062",
@@ -255,7 +256,9 @@ class WppPlatformAdapter(Platform):
         self.settings = platform_settings
 
         # 实例标识 (平台级, AstrBot 会话路由用)
-        self.instance_id = str(platform_config.get("id", "wpp") or "wpp")
+        self.instance_id = str(
+            platform_config.get("id", PLATFORM_NAME) or PLATFORM_NAME
+        )
 
         self.base_url = str(platform_config.get("wpp_base_url", "http://127.0.0.1:18062")).rstrip("/")
         self.ws_url = str(platform_config.get("wpp_ws_url", "") or "").strip()
@@ -294,10 +297,10 @@ class WppPlatformAdapter(Platform):
 
         # 缓存平台元数据 (AstrBot 每条消息都会取, 不要每次重建)
         self.metadata = PlatformMetadata(
-            name="wpp",
-            description="微信 WPP 适配器 (WeChatPadPro)",
+            name=PLATFORM_NAME,
+            description="个人微信（Pad协议）适配器 (WeChatPadPro)",
             id=self.instance_id,
-            adapter_display_name="微信 WPP",
+            adapter_display_name=PLATFORM_NAME,
             logo_path="logo.png",
             # WPP 不支持流式消息 (vendor 无消息编辑能力)
             support_streaming_message=False,

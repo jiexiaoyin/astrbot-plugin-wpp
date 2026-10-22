@@ -13,6 +13,7 @@ sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 main_mod = importlib.import_module("astrbot-plugin-wpp.main")
+constants = importlib.import_module("astrbot-plugin-wpp.wpp_constants")
 
 
 def fake_account():
@@ -51,7 +52,7 @@ def fake_instance(acct):
         sync_heartflow_whitelist=lambda reason="": None,
         _refresh_account_status=AsyncMock(),
     )
-    inst.meta = lambda: SimpleNamespace(name="wpp")
+    inst.meta = lambda: SimpleNamespace(name=constants.PLATFORM_NAME)
     return inst
 
 

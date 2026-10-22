@@ -22,6 +22,7 @@ sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 account_mod = importlib.import_module("astrbot-plugin-wpp.wpp_account")
 plugin_main = importlib.import_module("astrbot-plugin-wpp.main")
+constants = importlib.import_module("astrbot-plugin-wpp.wpp_constants")
 
 
 class StubStore:
@@ -114,7 +115,7 @@ class Ev:
         self.tracked.append(path)
 
     def get_platform_name(self):
-        return "wpp"
+        return constants.PLATFORM_NAME
 
     def get_extra(self, key, default=None):
         return self._extras.get(key, default)
