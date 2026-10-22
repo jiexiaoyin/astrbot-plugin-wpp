@@ -436,7 +436,7 @@ class WppPlugin(Star):
 
     @filter.command("wpp_status")
     async def wpp_status(self, event: AstrMessageEvent):
-        """查询 WPP 账号在线状态 (多账号: /wpp_status [实例id|账号id])。"""
+        """查询 WPP 账号在线状态 (/wpp_status [实例id|账号id])。"""
         insts = self._get_wpp_instances()
         if not insts:
             yield event.plain_result(

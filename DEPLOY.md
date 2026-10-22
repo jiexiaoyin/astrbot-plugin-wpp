@@ -22,9 +22,9 @@
    ```
 2. **vendor 能真实收发微信**（该微信已扫码登录到 vendor，或有有效连接）
 3. **WS 端口可达**：插件通过 `wpp_ws_url` 连 vendor 的 WebSocket（WS 主通道，连接即拉离线+实时消息）。AstrBot 容器内必须能访问该地址（同主机用宿主机 IP / 公网域名）
-4. **Dashboard 更新配置**：平台适配器 → wpp → 改 `wpp_base_url` + `wpp_auth_token`（单账号）或 `wpp_accounts`（多账号）→ 保存 → 重启平台
+4. **Dashboard 更新配置**：平台适配器 → wpp → 改 `wpp_base_url` + `wpp_auth_token` → 保存 → 重启平台。一个平台实例只对应一个 authcode/微信账号；多账号请添加多个平台实例
 
-> 插件自动做的事：用新地址调 API、每账号独立 WS 连接（用该账号 authcode 鉴权）、面板显示状态。webhook 已退役，无需配置 `webhook_public_url`。
+> 插件自动做的事：用新地址调 API、为当前 authcode 建立独立 WS 连接、面板显示状态。webhook 已退役，无需配置 `webhook_public_url`。
 
 ## 部署（新环境）
 
@@ -43,11 +43,11 @@ docker restart astrbot
 
 **平台适配器 → 添加 "微信 WPP"**：
 
-### 单账号模式
+### 平台实例配置
 | 字段 | 值 | 说明 |
 |---|---|---|
 | `wpp_base_url` | `http://<vendor-ip>:28062` | WPP API 地址（跨容器用宿主机 IP）|
-| `wpp_auth_token` | 你的 authcode | X-Access-Token = authcode |
+| `wpp_auth_token` | 你的 authcode | X-Access-Token = authcode；一个实例一个账号 |
 | `wpp_ws_url` | `wss://<vendor-domain>/ws/sync` | **WS 主通道地址**（连接即收消息）。容器内可用宿主机 IP 或公网域名 |
 | `wpp_allow_users` | `wxid_abc,123@chatroom` | 私聊 wxid / 群 ID（`@chatroom`）；空=私聊全部放行、群按 `group_reply` |
 | `wpp_group_reply` | `atbot` | 群消息准入：`atbot` / `none` / `all`（`all` 只观察，不强制回复）|
@@ -57,14 +57,18 @@ docker restart astrbot
 | `wpp_heartflow_groups` | 留空 | `custom` 模式的心流群名单；必须是群白名单的子集 |
 | `wpp_webhook_enabled` | `false` | webhook 已退役，保持 false（仅 WS）|
 
-### 多账号模式
-用 `wpp_accounts`（JSON 数组）替代 `wpp_auth_token`，同一 vendor 地址下通过不同 authcode 隔离多个微信：
-```json
-[
-  {"id": "xieyin", "authcode": "<authcode_1>", "allow_users": "", "group_reply": "atbot"},
-  {"id": "yirong", "authcode": "<authcode_2>", "allow_users": "", "group_reply": "all", "blacklist_groups": "<群id>@chatroom"}
-]
+### 多账号（多个平台实例）
+**一个平台实例 = 一个 `wpp_auth_token` = 一个微信账号。** Dashboard 里再添加一个
+「微信 WPP」平台实例，`id` 唯一（如 `wpp-shop2`），`wpp_auth_token` 填另一个账号：
+
+```text
+平台实例 wpp           (authcode A) ── 微信账号 A
+平台实例 wpp-shop2     (authcode B) ── 微信账号 B
 ```
+
+同一个 authcode 不允许配到两个实例：后启动的实例会被拒绝
+（日志提示 `同一 authcode 已被平台实例 ... 使用`），避免两个 WS 互抢消息。
+旧的 `wpp_accounts` 单实例多账号配置已移除，升级后请按实例拆分。
 详见 [README.md 多账号章节](README.md)。
 
 ### Heartflow 白名单

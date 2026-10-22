@@ -3,7 +3,7 @@
 覆盖:
   1. 准入 ≠ 唤醒: proactive_groups 放行未 @ 消息, 但不产生唤醒标志
   2. 优先级: 黑名单 / none / 群白名单 / require_at_mention
-  3. 配置解析: 单账号 wpp_proactive_groups / 多账号 proactive_groups
+  3. 配置解析: wpp_proactive_groups (一个实例一个账号)
   4. enrich_media 的 include/exclude 选择性下载
   5. on_waiting_llm_request 钩子懒加载一次, 并登记临时文件
 
@@ -123,36 +123,26 @@ class TestProactivePolicy(unittest.TestCase):
 
 
 class TestAccountConfigParsing(unittest.TestCase):
-    def test_multi_account_proactive_groups(self):
-        cfg = {
-            "wpp_base_url": "http://127.0.0.1:18062",
-            "wpp_accounts": [
-                {
-                    "id": "a1",
-                    "authcode": "x",
-                    "proactive_groups": "g1@chatroom, g2@chatroom",
-                }
-            ],
-        }
-        out = adapter._parse_accounts(cfg)
-        self.assertEqual(out[0]["proactive_groups"], {"g1@chatroom", "g2@chatroom"})
-
     def test_single_account_proactive_groups(self):
         cfg = {
             "wpp_base_url": "http://127.0.0.1:18062",
             "wpp_auth_token": "x",
-            "wpp_proactive_groups": "g3@chatroom",
+            "wpp_proactive_groups": "g1@chatroom, g2@chatroom",
         }
-        out = adapter._parse_accounts(cfg)
-        self.assertEqual(out[0]["proactive_groups"], {"g3@chatroom"})
+        out = adapter._parse_account(cfg)
+        self.assertEqual(out["proactive_groups"], {"g1@chatroom", "g2@chatroom"})
 
     def test_default_empty(self):
         cfg = {
             "wpp_base_url": "http://127.0.0.1:18062",
             "wpp_auth_token": "x",
         }
-        out = adapter._parse_accounts(cfg)
-        self.assertEqual(out[0]["proactive_groups"], set())
+        out = adapter._parse_account(cfg)
+        self.assertEqual(out["proactive_groups"], set())
+
+    def test_no_authcode_returns_none(self):
+        out = adapter._parse_account({"id": "wpp", "wpp_base_url": "http://x"})
+        self.assertIsNone(out)
 
 
 class _FakeApi:

@@ -14,7 +14,7 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 
 **让微信成为 AstrBot 的一等平台**：微信消息 → WPP vendor → 本适配器 → AstrBot 核心 (LLM/命令/插件)，回复自动回微信。
 
-> 🚀 **核心亮点**：**WS 实时主通道**（不断连、自动重连）+ **单实例多账号**（一个适配器管多个微信，通过 authcode 隔离）+ **全类型媒体**（图片/语音/文件/视频全部 AI 可读）+ **主动回复候选群**（未 @ 也放行，由 Heartflow 等插件决定是否接话）+ **进群欢迎语**（成员表 diff 识别真实新人，模板可 @、防刷屏、热更新）+ **filehelper 命令**（文件助手发指令管理白名单与欢迎语）。
+> 🚀 **核心亮点**：**WS 实时主通道**（不断连、自动重连）+ **一个实例一个微信账号**（一个 X-Access-Token/authcode 对应一个微信，多账号用多个平台实例）+ **全类型媒体**（图片/语音/文件/视频全部 AI 可读）+ **主动回复候选群**（未 @ 也放行，由 Heartflow 等插件决定是否接话）+ **进群欢迎语**（成员表 diff 识别真实新人，模板可 @、防刷屏、热更新）+ **filehelper 命令**（文件助手发指令管理白名单与欢迎语）。
 
 ## 📖 目录
 
@@ -26,7 +26,7 @@ AstrBot 微信 WPP (WeChatPadPro) 平台适配器。
 - [文件结构](#-文件结构)
 - [部署](#-部署)
 - [平台配置字段](#平台配置字段)
-- [多账号](#-多账号单实例内-通过-authcode-隔离)
+- [多账号](#-多账号多个平台实例)
 - [主动回复（群聊未 @）](#-主动回复群聊未-)
 - [常见问题](#-常见问题)
 - [开发与测试](#-开发与测试)
@@ -46,7 +46,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
    ```
 2. **添加平台**：Dashboard → 平台适配器 → 添加「微信 WPP」，至少填写：
    - `wpp_base_url`：vendor HTTP 地址，如 `http://<vendor-ip>:28062`
-   - `wpp_auth_token`：vendor authcode（单账号）
+   - `wpp_auth_token`：vendor authcode（一个实例对应一个微信账号）
    - `wpp_ws_url`：vendor WS 地址，如 `wss://<vendor-domain>/ws/sync`
    - 保存并启用。
 3. **验证在线**：AstrBot 日志出现 `账号已在线` + `WS connected`；私聊机器人
@@ -87,11 +87,11 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 - **非消息事件过滤**（v0.3.0）：只处理 `sync_message` 等消息事件，朋友圈/联系人推送不再被误解析（旧版日志刷屏根因）
 - **webhook 已退役**：不再依赖 vendor 回调，WS 主通道更可靠
 
-### 👥 单实例多账号（一个插件管多个微信）
-- **同一 vendor 地址**（`wpp_base_url` + `wpp_ws_url`），通过不同 **authcode** 隔离账号
-- **每账号独立**：WS 连接 / 白名单 / 群策略 / 黑名单 / 去重 / 机器人身份 / filehelper 命令
-- **配置极简**：`wpp_accounts` JSON 列表，每个账号 `{id, authcode, allow_users, ...}`
-- 单账号向后兼容（`wpp_auth_token`）
+### 👥 一个实例一个微信账号
+- **一个平台实例 = 一个 `wpp_auth_token`（X-Access-Token = authcode）= 一个微信账号**
+- 多账号请添加多个「微信 WPP」平台实例，`id` 唯一、各自填自己的 authcode
+- **每个实例独立**：WS 连接 / 白名单 / 群策略 / 黑名单 / 去重 / 机器人身份 / filehelper 命令
+- 同一 authcode 不允许被两个实例同时使用，后启动的实例会被拒绝
 
 ### 📦 全类型消息收发（AI 全能读懂）
 | 类型 | 处理 | 说明 |
@@ -153,13 +153,13 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
   - 入口：Dashboard → **插件** → 已安装插件 → `astrbot-plugin-wpp` →
     **打开插件UI界面**（打开的是第一页 `console`，即控制台）；
     也可进入插件详情 → 行为 → 页面条目 → 「打开」。
-  - 控制台是**运行时策略的唯一日常入口**；vendor 地址/authcode、账号列表、
+  - 控制台是**运行时策略的唯一日常入口**；vendor 地址/authcode、平台实例、
     Heartflow 模式等仍在 Dashboard → 平台适配器 → 微信 WPP 配置中修改。
   - 适配器配置里的白名单/群策略字段是账号启动时的初始值；账号保存过策略后，
     以控制台持久化的运行时配置为准。
 - **WPP 账号诊断**：查看已配置账号在线状态，或用 X-Access-Token 查询
   昵称/wxid/地区/签名；Token 仅用于本次请求，不落盘。
-- **在线状态卡片**：平台状态实时显示（多账号聚合）
+- **在线状态卡片**：平台状态实时显示（多实例聚合）
 - **动态面板地址**：UI 显示实际配置的 vendor 地址（不硬编码）
 - **发送统计**：`WppAccount.stats["send"]` 暴露成功/失败/连续失败/最后错误；
   连续失败 3 次写 WARNING 日志
@@ -256,7 +256,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 ```
 
 - **主通道 = WS 实时连接**：连接建立即拉全量离线消息 + 实时推送，自动重连保活（webhook 已退役）
-- **多账号 = 单实例内多个 WppAccount**：同一 vendor 地址，每个账号独立 authcode + 独立 WS + 独立白名单
+- **一个实例 = 一个 WppAccount**：一个 authcode + 一个 WS + 一套白名单；多账号 = 多个平台实例（AstrBot UMO 前缀按实例 id 区分）
 
 ---
 
@@ -326,12 +326,11 @@ docker exec -w /AstrBot/data/plugins astrbot \
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `wpp_base_url` | ✅ | WPP API 地址（如 `http://<vendor-ip>:28062`）|
-| `wpp_auth_token` | 二选一 | **单账号模式**：WPP X-Access-Token（= authcode）|
-| `wpp_accounts` | 二选一 | **多账号模式**：账号列表 JSON（见下方多账号章节）|
-| `wpp_allow_users` | — | **单账号模式**白名单 wxid / 群 ID（逗号分隔）；`@chatroom` 群ID 同时作为群白名单和主动回复候选 |
-| `wpp_block_users` | — | **单账号模式**私聊黑名单 wxid（逗号分隔），全部放行时排除指定人；群聊里也屏蔽该成员 |
-| `wpp_group_reply` | — | **单账号模式**群消息准入策略: `atbot` / `none` / `all`（`all`=放行所有群消息，观察模式，不强制回复）|
-| `wpp_proactive_groups` | — | **单账号模式**额外主动候选群（逗号分隔群 ID）；群白名单已自动共用，通常无需填写 |
+| `wpp_auth_token` | ✅ | WPP X-Access-Token（= authcode）；一个实例只能填一个，对应一个微信账号 |
+| `wpp_allow_users` | — | 白名单 wxid / 群 ID（逗号分隔）；`@chatroom` 群ID 同时作为群白名单和主动回复候选 |
+| `wpp_block_users` | — | 私聊黑名单 wxid（逗号分隔），全部放行时排除指定人；群聊里也屏蔽该成员 |
+| `wpp_group_reply` | — | 群消息准入策略: `atbot` / `none` / `all`（`all`=放行所有群消息，观察模式，不强制回复）|
+| `wpp_proactive_groups` | — | 额外主动候选群（逗号分隔群 ID）；群白名单已自动共用，通常无需填写 |
 | `wpp_sync_heartflow_whitelist` | — | 群白名单自动同步到 Heartflow `chat_whitelist`（默认 `true`，未装 Heartflow 自动跳过；每 5 分钟自愈）|
 | `wpp_heartflow_whitelist_mode` | — | `auto`=参考 WPP 群白名单（默认）；`custom`=单独使用 `wpp_heartflow_groups` |
 | `wpp_heartflow_groups` | — | `custom` 模式的单独 Heartflow 群白名单（逗号分隔群 ID），必须是 WPP 群白名单的子集 |
@@ -343,29 +342,34 @@ docker exec -w /AstrBot/data/plugins astrbot \
 | `wpp_ws_url` | — | WS 实时通道地址（如 `wss://<vendor-domain>/ws/sync`），主通道 |
 | `wpp_webhook_enabled` | — | 是否启用 webhook 兜底（默认 `false`，仅 WS）|
 
-> ⚠️ **单账号 vs 多账号**：配置 `wpp_auth_token`（+ 顶层白名单）= 单账号；配置 `wpp_accounts`（JSON 列表）= 多账号。两者只用一个。
+> ⚠️ **一个平台实例 = 一个 `wpp_auth_token` = 一个微信账号。** 不再支持
+> `wpp_accounts` 单实例多账号配置；旧配置会告警并被忽略（只使用
+> `wpp_auth_token`）。多账号请拆成多个平台实例。
 >
 > ⚠️ 上表中的白名单/群策略字段是账号启动时的初始值。日常增删白名单、切换群模式请使用 **WPP 控制台**；账号保存过运行时策略后，以控制台写入的 `wpp_whitelist.json` 为准，避免两处配置产生歧义。
 
-### 👥 多账号（单实例内, 通过 authcode 隔离）
-一个 wpp 适配器实例可管理多个微信账号，**同一 vendor 地址**（`wpp_base_url` + `wpp_ws_url`），通过不同 `authcode` 隔离。每个账号独立：
-- WS 实时连接（用该账号 authcode 鉴权）
-- 白名单/私聊黑名单/群策略/群黑名单（`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/wpp_whitelist.json` 独立持久化）
-- filehelper 命令（各自管理自己的白名单）
-- 消息去重 / 机器人身份
+### 👥 多账号（多个平台实例）
+**一个微信账号 = 一个 authcode = 一个「微信 WPP」平台实例。** 多账号时在
+Dashboard 再添加一个「微信 WPP」平台实例：
 
-`wpp_accounts` 配置示例：
-```json
-[
-  {"id": "xieyin", "authcode": "<authcode_账号1>", "allow_users": "<wxid_白名单>,<群id>@chatroom", "group_reply": "atbot"},
-  {"id": "yirong", "authcode": "<authcode_账号2>", "allow_users": "", "block_users": "<wxid_排除>", "group_reply": "atbot", "proactive_groups": "<无群白名单时的额外候选>@chatroom", "blacklist_groups": ""},
-  {"id": "test",  "authcode": "xxx", "require_at_mention": true}
-]
+```text
+平台实例 wpp           (authcode A) ── 微信账号 A
+平台实例 wpp-shop2     (authcode B) ── 微信账号 B
 ```
-每个账号字段：`id`（唯一）、`authcode`（必填）、`allow_users`/`block_users`/`group_reply`/`proactive_groups`/`blacklist_groups`/`require_at_mention`（可选，默认同单账号）。
 
-filehelper 命令输出带账号标识与版本（如 `【WPP 命令 · 账号 xieyin · v<版本>】`），
-各账号命令互不影响。
+每个实例：
+- `id` 全平台唯一（决定 AstrBot UMO 前缀和运行时数据目录）；
+- `wpp_auth_token` 填该账号自己的 authcode；
+- 独立 WS 连接、白名单/私聊黑名单/群策略/群黑名单
+  （`data/plugin_data/astrbot-plugin-wpp/accounts/<实例 id>/wpp_whitelist.json`）；
+- 独立 filehelper 命令、消息去重和机器人身份。
+
+**同一个 authcode 只允许一个实例轮询**：重复配置时后启动的实例会报
+`同一 authcode 已被平台实例 ... 使用` 并拒绝启动，避免两个 WS 互抢消息。
+authcode 不能复用于多个账号，也不存在「一个 authcode 下挂多个微信」的配置。
+
+filehelper 命令输出带账号标识与版本（如 `【WPP 命令 · 账号 wpp · v<版本>】`），
+各实例命令互不影响。
 
 ### 🤖 主动回复（群聊未 @）
 
@@ -380,7 +384,7 @@ WPP 适配器只负责**准入**，不负责判断“要不要回复”。链路
 #### 配置
 
 1. 把群加入**群白名单**即可（主动回复与白名单共用同一份列表）：
-   - Dashboard：`wpp_allow_users` / `wpp_accounts[].allow_users` 加群 ID
+   - Dashboard（对应平台实例）：`wpp_allow_users` 加群 ID
    - filehelper：`/group add 123@chatroom`
    - 未配置群白名单、只想单独 opt-in 时，才用 `proactive_groups` / `/proactive add`
 2. 启用一个决策插件（**只开一个**）：
@@ -430,7 +434,7 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 ```
 
 例如 `wpp:GroupMessage:123@chatroom`。用 `/proactive list` 可直接看到每个群
-对应的 UMO；多账号或自定义平台实例 id 时前缀会不同。
+对应的 UMO；多个平台实例或自定义实例 id 时前缀会不同。
 
 **自动同步（默认开启）**：WPP 会把各账号的群白名单（`auto` 模式下还包括
 显式 `proactive_groups`）同步到 Heartflow 的 `chat_whitelist`。同步结果始终
@@ -527,9 +531,10 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 回退为普通文本。
 
 ### 多账号会互相影响吗
-不会。每个账号独立 WS、白名单、黑名单、群策略、去重和 filehelper 命令；
-filehelper 输出会带账号标识（如 `【WPP 命令 · 账号 xieyin】`）。管理员命令
-可用账号 id 指定目标。
+不会。多账号 = 多个「微信 WPP」平台实例，每个实例独立 authcode、WS、白名单、
+黑名单、群策略、去重和 filehelper 命令；filehelper 输出会带实例/账号标识
+（如 `【WPP 命令 · 账号 wpp-shop2】`）。管理员命令可用实例 id 指定目标。
+注意同一个 authcode 不能同时配到两个实例。
 
 ### 升级后如何确认生效
 查看启动日志中的 `Plugin astrbot-plugin-wpp (x.y.z)`，或在文件传输助手发
@@ -579,6 +584,12 @@ python -m compileall -q .
 
 升级插件只需替换插件目录并重启 AstrBot；白名单和去重数据保存在
 `data/plugin_data/astrbot-plugin-wpp/`，不会因替换插件文件丢失。
+
+> ⚠️ **v0.10.0 升级**：`wpp_accounts` 单实例多账号配置已移除。若旧配置里用了
+> 它，请为每个账号各建一个「微信 WPP」平台实例（`id` 唯一、各自填
+> `wpp_auth_token`）。运行时数据目录按实例 id 隔离；需要沿用旧
+> `accounts/<旧账号 id>/` 下的白名单/去重数据时，把该目录改名为
+> `accounts/<新实例 id>/`（仅单账号升级且实例 id 仍为 `wpp` 时无需处理）。
 
 ---
 

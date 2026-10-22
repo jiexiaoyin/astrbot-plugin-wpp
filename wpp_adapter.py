@@ -12,17 +12,18 @@ AstrBot 平台适配器插件范式 (docs/zh/dev/plugin-platform-adapter.md):
   - 消息 push: vendor WS v2 `{Data:{type:"sync_message", data:{messages:[...]}}}`
   - 消息类型数字: 1=text 3=image 6=file 34=voice 43=video 47=emoji 49=app 51=relay 10002=revoke
 
-v0.3.0 多账号:
-  - 单实例内管理多个微信账号 (WppAccount), 每账号一个 authcode + 独立 WS + 独立白名单
+账号模型 (v0.10.0):
+  - 一个平台实例 = 一个 `wpp_auth_token` (X-Access-Token = authcode) = 一个微信账号
+  - 多账号 = 多个平台实例 (id 唯一, 各自 authcode), 不支持单实例内挂多个账号
+  - 同一个 authcode 只允许一个实例轮询, 否则两个 WS 会互抢消息
   - WS 是主通道; webhook 保留为兼容兜底 (wpp_webhook_enabled=True)
-  - `send_by_session` 按会话→账号绑定路由 (事件收到时由账号登记), 主动推送也能发对账号
 """
 
 import asyncio
+import hashlib
 import hmac
 import json
 import secrets
-from collections import OrderedDict
 from typing import Any
 
 from astrbot import logger
@@ -79,71 +80,47 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
-def _parse_accounts(platform_config: dict) -> list[dict]:
-    """解析账号配置列表。
+def _parse_account(platform_config: dict) -> dict | None:
+    """解析当前平台实例的唯一账号。
 
-    优先 wpp_accounts (JSON 数组); 为空则回退到单账号 (wpp_auth_token + 顶层白名单)。
-    返回 [{id, authcode, allow_users, group_reply, blacklist_groups,
-           require_at_mention, proactive_groups, base_url, ws_url}]
+    一个平台实例 = 一个 `wpp_auth_token` (X-Access-Token = authcode) =
+    一个微信账号。多账号请添加多个平台实例 (id 唯一, 各自 authcode)。
+    返回 {id, authcode, allow_users, group_reply, blacklist_groups,
+          require_at_mention, proactive_groups, base_url, ws_url}；
+    未配置 authcode 时返回 None。
     """
     base_url = str(platform_config.get("wpp_base_url", "http://127.0.0.1:18062")).rstrip("/")
     ws_url = str(platform_config.get("wpp_ws_url", "") or "").strip()
 
-    raw = platform_config.get("wpp_accounts", "") or ""
-    accounts: list[Any] = []
-    if isinstance(raw, str):
-        raw = raw.strip()
-        if raw:
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    accounts = parsed
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[WPP] wpp_accounts JSON 解析失败, 回退单账号: {e}")
-    elif isinstance(raw, list):
-        accounts = raw
+    # 旧版单实例多账号配置已移除。静默忽略会把账号"吞掉"，这里明确告警，
+    # 提示按实例拆分；不输出 authcode/旧账号内容。
+    if str(platform_config.get("wpp_accounts", "") or "").strip():
+        logger.warning(
+            "[WPP] wpp_accounts 多账号配置已移除：一个平台实例只能对应一个 "
+            "authcode/微信账号。请为每个账号各添加一个「微信 WPP」平台实例，"
+            "id 唯一并分别填写 wpp_auth_token。"
+        )
 
-    if accounts:
-        out = []
-        for i, acct in enumerate(accounts):
-            if not isinstance(acct, dict):
-                continue
-            aid = str(acct.get("id") or f"account{i}")
-            authcode = str(acct.get("authcode") or acct.get("wpp_auth_token") or "").strip()
-            if not authcode:
-                logger.warning(f"[WPP] 账号 {aid} 缺少 authcode, 已跳过")
-                continue
-            out.append({
-                "id": aid,
-                "authcode": authcode,
-                "allow_users": _as_csv(acct.get("allow_users", "")),
-                "group_reply": str(acct.get("group_reply", "atbot") or "atbot"),
-                "blacklist_groups": _as_csv(acct.get("blacklist_groups", "")),
-                "block_users": _as_csv(acct.get("block_users", "")),
-                "require_at_mention": _as_bool(acct.get("require_at_mention")),
-                "proactive_groups": _as_csv(acct.get("proactive_groups", "")),
-                "base_url": str(acct.get("base_url") or base_url).rstrip("/"),
-                "ws_url": str(acct.get("ws_url") or ws_url).strip(),
-            })
-        if out:
-            return out
-
-    # 单账号回退: 顶层 wpp_auth_token + 顶层白名单
     authcode = str(platform_config.get("wpp_auth_token", "") or "").strip()
-    if authcode:
-        return [{
-            "id": str(platform_config.get("id", "wpp") or "wpp"),
-            "authcode": authcode,
-            "allow_users": _as_csv(platform_config.get("wpp_allow_users", "")),
-            "group_reply": str(platform_config.get("wpp_group_reply", "atbot") or "atbot"),
-            "blacklist_groups": set(),
-            "block_users": _as_csv(platform_config.get("wpp_block_users", "")),
-            "require_at_mention": False,
-            "proactive_groups": _as_csv(platform_config.get("wpp_proactive_groups", "")),
-            "base_url": base_url,
-            "ws_url": ws_url,
-        }]
-    return []
+    if not authcode:
+        return None
+    return {
+        "id": str(platform_config.get("id", "wpp") or "wpp"),
+        "authcode": authcode,
+        "allow_users": _as_csv(platform_config.get("wpp_allow_users", "")),
+        "group_reply": str(platform_config.get("wpp_group_reply", "atbot") or "atbot"),
+        "blacklist_groups": set(),
+        "block_users": _as_csv(platform_config.get("wpp_block_users", "")),
+        "require_at_mention": False,
+        "proactive_groups": _as_csv(platform_config.get("wpp_proactive_groups", "")),
+        "base_url": base_url,
+        "ws_url": ws_url,
+    }
+
+
+def authcode_fingerprint(authcode: str) -> str:
+    """authcode 锁标识 (不落盘/不打印明文)。"""
+    return hashlib.sha256(str(authcode).encode("utf-8")).hexdigest()[:12]
 
 
 # Dashboard WebUI 表单配置元数据 (config_metadata)
@@ -154,35 +131,30 @@ WPP_CONFIG_METADATA = {
         "hint": "宿主机IP:18062 (wechatpadpromax API; 18080是mitmdump代理非API)。AstrBot容器用宿主IP可达, 勿用容器名(DNS不通)",
     },
     "wpp_auth_token": {
-        "description": "单账号模式: 微信访问凭证 (X-Access-Token = authcode)",
+        "description": "微信访问凭证 (X-Access-Token = authcode)",
         "type": "string",
         "secret": True,
-        "hint": "仅单账号时用。多账号请用 wpp_accounts JSON 列表。绑定微信账号的 authcode",
-    },
-    "wpp_accounts": {
-        "description": "多账号模式: 账号列表 (JSON 数组)",
-        "type": "string",
-        "hint": '多账号时用。JSON 数组, 每元素: {"id":"xieyin","authcode":"xxx","allow_users":"","block_users":"","group_reply":"atbot","blacklist_groups":"","require_at_mention":false,"proactive_groups":""}。留空=单账号(wpp_auth_token)。每账号的策略字段是启动时的初始值；日常修改请在 WPP 控制台进行。',
+        "hint": "一个平台实例只能填一个 authcode，对应一个微信账号。多账号请再添加一个「微信 WPP」平台实例，id 唯一、各自填 authcode。",
     },
     "wpp_allow_users": {
-        "description": "单账号模式: 白名单 wxid / 群ID (逗号分隔)",
+        "description": "白名单 wxid / 群ID (逗号分隔)",
         "type": "string",
-        "hint": "仅单账号时用。wxid 控制私聊, @chatroom 群ID 同时作为群白名单和主动回复候选（与白名单共用）。作为启动初始值；日常修改请在 WPP 控制台进行，多账号白名单在 wpp_accounts 每账号里配",
+        "hint": "wxid 控制私聊, @chatroom 群ID 同时作为群白名单和主动回复候选（与白名单共用）。作为启动初始值；日常修改请在 WPP 控制台进行。",
     },
     "wpp_block_users": {
-        "description": "单账号模式: 私聊黑名单 wxid (逗号分隔)",
+        "description": "私聊黑名单 wxid (逗号分隔)",
         "type": "string",
         "hint": "全部放行模式下用它排除特定 wxid (私聊/群聊都生效)。公众号/微信团队/微信支付/服务通知等系统消息已内置静默, 无需填写。作为启动初始值；日常修改请在 WPP 控制台进行",
     },
     "wpp_group_reply": {
-        "description": "单账号模式: 群消息回复模式",
+        "description": "群消息回复模式",
         "type": "string",
-        "hint": "仅单账号时用。atbot=只放行@ / none=忽略群 / all=放行所有群消息(观察模式, 不强制回复)。作为启动初始值；日常修改请在 WPP 控制台进行",
+        "hint": "atbot=只放行@ / none=忽略群 / all=放行所有群消息(观察模式, 不强制回复)。作为启动初始值；日常修改请在 WPP 控制台进行",
     },
     "wpp_proactive_groups": {
-        "description": "单账号模式: 额外主动回复候选群 (逗号分隔群ID)",
+        "description": "额外主动回复候选群 (逗号分隔群ID)",
         "type": "string",
-        "hint": "仅单账号时用。群白名单 (wpp_allow_users 中的 @chatroom) 已自动作为主动候选, 通常无需填写; 此项只用于未配置群白名单时显式补充。未@消息只放行不唤醒, 由 Heartflow/active_reply 决定是否接话。作为启动初始值；日常修改请在 WPP 控制台进行。",
+        "hint": "群白名单 (wpp_allow_users 中的 @chatroom) 已自动作为主动候选, 通常无需填写; 此项只用于未配置群白名单时显式补充。未@消息只放行不唤醒, 由 Heartflow/active_reply 决定是否接话。作为启动初始值；日常修改请在 WPP 控制台进行。",
     },
     "wpp_sync_heartflow_whitelist": {
         "description": "群白名单自动同步到 Heartflow",
@@ -245,7 +217,6 @@ WPP_CONFIG_METADATA = {
     default_config_tmpl={
         "wpp_base_url": "http://127.0.0.1:18062",
         "wpp_auth_token": "",
-        "wpp_accounts": "",
         "wpp_allow_users": "",
         "wpp_block_users": "",
         "wpp_group_reply": "atbot",
@@ -264,11 +235,14 @@ WPP_CONFIG_METADATA = {
     config_metadata=WPP_CONFIG_METADATA,
 )
 class WppPlatformAdapter(Platform):
-    """单实例多账号: 管理多个 WppAccount (每账号一个 authcode + WS + 白名单)。
+    """一个平台实例 = 一个 authcode = 一个微信账号。
 
     平台级职责: 账号解析/生命周期/meta/create_event/send_by_session/webhook 兜底。
     账号级职责 (WppAccount): WS/队列/消息处理/白名单/filehelper/去重。
+    多账号 = 多个平台实例 (id 唯一, 各自 authcode)。
     """
+    #: authcode 指纹 → 持有它的实例 id；同一 authcode 只允许一个实例轮询。
+    _ACTIVE_AUTHCODES: dict[str, str] = {}
 
     def __init__(
         self,
@@ -332,11 +306,11 @@ class WppPlatformAdapter(Platform):
             config_metadata=WPP_CONFIG_METADATA,
         )
 
-        # 解析账号列表 → 创建 WppAccount
-        account_cfgs = _parse_accounts(platform_config)
-        self.accounts: list[WppAccount] = []
-        for acfg in account_cfgs:
-            acct = WppAccount(
+        # 一个实例只解析/创建一个账号：authcode 与微信账号一一对应。
+        acfg = _parse_account(platform_config)
+        self.account: WppAccount | None = None
+        if acfg:
+            self.account = WppAccount(
                 platform=self,
                 account_id=acfg["id"],
                 authcode=acfg["authcode"],
@@ -357,17 +331,13 @@ class WppPlatformAdapter(Platform):
                 ),
                 repeat_guard_limit=self.outbound_repeat_limit,
             )
-            self.accounts.append(acct)
             logger.info(
-                f"[WPP] 账号已注册: id={acct.account_id} base={acct.base_url} "
-                f"ws={'有' if acct.ws_url else '无'}"
+                f"[WPP] 账号已注册: id={self.account.account_id} "
+                f"base={self.account.base_url} "
+                f"ws={'有' if self.account.ws_url else '无'}"
             )
 
-        # 会话 → 账号绑定 (账号收到消息时登记, 主动推送时据此路由)
-        self._session_accounts: OrderedDict[str, WppAccount] = OrderedDict()
-        self._session_cache_max = 2000
-
-        # webhook 兜底 (单实例一个 server, 多账号共用同一 webhook_path + token)
+        # webhook 兜底 (单实例一个 server)
         self.webhook_path = str(platform_config.get("webhook_path", "/wpp/webhook")).rstrip("/")
         self.webhook_token = str(platform_config.get("webhook_token", "") or "").strip()
         if not self.webhook_token:
@@ -386,11 +356,14 @@ class WppPlatformAdapter(Platform):
     def meta(self) -> PlatformMetadata:
         return self.metadata
 
+    @property
+    def accounts(self) -> list[WppAccount]:
+        """控制台/命令按 accounts 列表展示；单实例恒为 0 或 1 个账号。"""
+        return [self.account] if self.account is not None else []
+
     def create_event(self, message) -> WppMessageEvent:
         """AstrBot 标准事件工厂 (适配器基类约定)。"""
-        acct = self._session_accounts.get(message.session_id) or (
-            self.accounts[0] if self.accounts else None
-        )
+        acct = self.account
         return WppMessageEvent(
             message_str=message.message_str,
             message_obj=message,
@@ -400,27 +373,34 @@ class WppPlatformAdapter(Platform):
             account_id=acct.account_id if acct else "",
         )
 
-    def bind_session(self, session_id: str, account: WppAccount) -> None:
-        """登记会话 → 账号, 供 send_by_session (主动推送) 路由。"""
-        if not session_id:
-            return
-        self._session_accounts[session_id] = account
-        self._session_accounts.move_to_end(session_id)
-        while len(self._session_accounts) > self._session_cache_max:
-            self._session_accounts.popitem(last=False)
-
     def get_stats(self) -> dict:
         stats = super().get_stats()
-        stats["accounts"] = [acct.stats for acct in self.accounts]
-        if self.accounts:
-            stats["meta"]["description"] = f"微信 WPP · {len(self.accounts)} 账号"
+        stats["accounts"] = [self.account.stats] if self.account else []
+        if self.account:
+            stats["meta"]["description"] = f"微信 WPP · {self.account.account_id}"
         return stats
 
     # ------------------------------------------------------------------ 生命周期
     async def run(self) -> None:
-        """启动所有账号的消息 worker + WS 实时通道 (+ 可选 webhook 兜底)。"""
-        # ① 每个账号: 确认在线 + 刷新身份 + 启动 worker/WS/维护循环
-        for acct in self.accounts:
+        """启动当前账号的 worker + WS 实时通道 (+ 可选 webhook 兜底)。"""
+        acct = self.account
+        if acct is None:
+            raise ValueError(
+                "WPP: 未配置 wpp_auth_token（X-Access-Token = authcode）。"
+                "一个平台实例只能绑定一个微信账号；多账号请添加多个平台实例。"
+            )
+
+        # 一个 authcode 同时只能有一个轮询者：两个实例会各自建 WS，互抢消息。
+        fp = authcode_fingerprint(acct.authcode)
+        owner = self._ACTIVE_AUTHCODES.get(fp)
+        if owner and owner != self.instance_id:
+            raise RuntimeError(
+                f"同一 authcode 已被平台实例 {owner} 使用；"
+                "一个 authcode 对应一个微信账号，只能由一个实例轮询"
+            )
+        self._ACTIVE_AUTHCODES[fp] = self.instance_id
+        try:
+            # ① 确认在线 + 刷新身份 + 启动 worker/WS/维护循环
             try:
                 await self._ensure_logged_in(acct)
                 await self._refresh_account_status(acct)
@@ -428,15 +408,18 @@ class WppPlatformAdapter(Platform):
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[WPP:{acct.account_id}] 账号启动失败: {e}")
 
-        # ② 可选: webhook server (仅 wpp_webhook_enabled=true)
-        if self.webhook_enabled:
-            await self._start_webhook_server()
+            # ② 可选: webhook server (仅 wpp_webhook_enabled=true)
+            if self.webhook_enabled:
+                await self._start_webhook_server()
 
-        # ③ 后台状态循环 (遍历所有账号检查在线 + 心跳)
-        self._status_task = asyncio.create_task(self._account_status_loop())
+            # ③ 后台状态循环 (检查在线 + 心跳)
+            self._status_task = asyncio.create_task(self._account_status_loop())
 
-        # ④ 启动时同步 Heartflow 白名单 (此时各插件均已加载)
-        self.sync_heartflow_whitelist("startup")
+            # ④ 启动时同步 Heartflow 白名单 (此时各插件均已加载)
+            self.sync_heartflow_whitelist("startup")
+        except BaseException:
+            self._ACTIVE_AUTHCODES.pop(fp, None)
+            raise
 
     def sync_heartflow_whitelist(self, reason: str = "") -> None:
         """把本实例所有账号的群白名单/主动候选群同步给 Heartflow。
@@ -613,23 +596,29 @@ class WppPlatformAdapter(Platform):
         )
 
     async def terminate(self) -> None:
-        """清理: 所有账号的 WS/worker + 状态循环 + webhook server。"""
-        if self._status_task:
-            self._status_task.cancel()
-            try:
-                await self._status_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-            self._status_task = None
-        for acct in self.accounts:
-            try:
-                await acct.stop()
-            except Exception:  # noqa: BLE001
-                pass
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-            self._server = None
+        """清理: 账号 WS/worker + 状态循环 + webhook server + authcode 锁。"""
+        try:
+            if self._status_task:
+                self._status_task.cancel()
+                try:
+                    await self._status_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+                self._status_task = None
+            if self.account is not None:
+                try:
+                    await self.account.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+                self._server = None
+        finally:
+            if self.account is not None:
+                fp = authcode_fingerprint(self.account.authcode)
+                if self._ACTIVE_AUTHCODES.get(fp) == self.instance_id:
+                    self._ACTIVE_AUTHCODES.pop(fp, None)
 
     # ------------------------------------------------------------------ webhook 兜底
     async def _handle_webhook_health(self, request: Any) -> Any:
@@ -638,7 +627,7 @@ class WppPlatformAdapter(Platform):
         return web.Response(text="ok")
 
     async def _handle_webhook(self, request: Any) -> Any:
-        """接收 WPP vendor 消息 push (webhook 已退役, 多账号时按 recipient 路由)。"""
+        """接收 WPP vendor 消息 push (webhook 已退役, 单实例单账号)。"""
         from aiohttp import web
 
         req_path = request.path
@@ -664,25 +653,15 @@ class WppPlatformAdapter(Platform):
                 logger.warning(f"[WPP] webhook signature verify failed: path={req_path}")
                 return web.Response(status=403)
 
+        acct = self.account
+        if acct is None:
+            return web.Response(status=200)
         for src in extract_all_msg_src(payload):
-            recipient_id = safe_str(src.get("recipient_id") or src.get("toWxid") or src.get("ToWxid"))
-            acct = self._find_account_by_recipient(recipient_id)
-            if acct is None:
-                continue
             try:
                 await acct._process_src(src)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[WPP] webhook _process_src failed: {e}")
         return web.Response(status=200)
-
-    def _find_account_by_recipient(self, recipient_id: str) -> WppAccount | None:
-        """按 recipient_id (机器人 wxid) 定位账号。单账号直接返回。"""
-        if len(self.accounts) == 1:
-            return self.accounts[0]
-        for acct in self.accounts:
-            if acct._self_wxid and recipient_id and recipient_id == acct._self_wxid:
-                return acct
-        return None
 
     @staticmethod
     def _verify_webhook_signature(raw_body: str, signature: str, secret: str) -> bool:
@@ -703,18 +682,8 @@ class WppPlatformAdapter(Platform):
 
     # ------------------------------------------------------------------ 发送
     def _find_account_for_send(self, session: MessageSession) -> WppAccount | None:
-        """定位回复所属账号。
-
-        1. 账号收到消息时登记的 session → 账号绑定 (最准确)
-        2. 单账号直接返回
-        3. 多账号且无绑定: 返回 None (宁可不发, 也不用错账号发)
-        """
-        acct = self._session_accounts.get(session.session_id)
-        if acct is not None:
-            return acct
-        if len(self.accounts) == 1:
-            return self.accounts[0]
-        return None
+        """单实例单账号：所有会话都由当前账号发送。"""
+        return self.account
 
     async def send_by_session(
         self, session: MessageSession, message_chain: MessageChain
@@ -724,8 +693,7 @@ class WppPlatformAdapter(Platform):
             acct = self._find_account_for_send(session)
             if acct is None:
                 logger.warning(
-                    f"[WPP] 无法确定会话 {session.session_id} 所属账号 "
-                    f"(多账号且无绑定), 发送失败"
+                    f"[WPP] 当前平台实例未配置 authcode，无法发送到 {session.session_id}"
                 )
                 return
             logger.info(f"[WPP:{acct.account_id}] send_by_session: to={session.session_id}")

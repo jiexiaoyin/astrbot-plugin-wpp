@@ -1,4 +1,4 @@
-"""WPP 单实例多账号: 单个微信账号 (一个 authcode) 的封装 (v0.3.0)。
+"""WPP 单实例单账号: 一个微信账号 (一个 authcode) 的封装。
 
 每个 WppAccount 持有该账号独立的:
   - API 客户端 (WppClient, base_url + 该账号 authcode)
@@ -65,7 +65,7 @@ FILTER_REPORT_INTERVAL = 60.0  # 过滤日志汇总间隔 (秒)
 class WppAccount:
     """单个微信账号的完整封装 (一个 authcode = 一个账号)。
 
-    platform: WppPlatformAdapter 引用 (用于 commit_event / bind_session / meta)。
+    platform: WppPlatformAdapter 引用 (用于 commit_event / meta)。
     """
 
     def __init__(
@@ -436,7 +436,6 @@ class WppAccount:
             temp_files = await enrich_media(self._api, msg)
 
         # 主动发送路由: 记录 session → 本账号, 再按平台约定创建事件
-        self.platform.bind_session(msg.session_id, self)
         event = self.platform.create_event(msg)
         if observe_only:
             # 懒加载媒体: main.py 的 on_waiting_llm_request 钩子会消费这个标记
