@@ -22,7 +22,7 @@
    ```
 2. **vendor 能真实收发微信**（该微信已扫码登录到 vendor，或有有效连接）
 3. **WS 端口可达**：插件通过 `wpp_ws_url` 连 vendor 的 WebSocket（WS 主通道，连接即拉离线+实时消息）。AstrBot 容器内必须能访问该地址（同主机用宿主机 IP / 公网域名）
-4. **Dashboard 更新配置**：平台适配器 → wpp → 改 `wpp_base_url` + `wpp_auth_token` → 保存 → 重启平台。一个平台实例只对应一个 authcode/微信账号；多账号请添加多个平台实例
+4. **Dashboard 更新配置**：平台适配器 → 个人微信（Pad协议）→ 改 `wpp_base_url` + `wpp_auth_token` → 保存 → 重启平台。一个平台实例只对应一个 authcode/微信账号；多账号请添加多个平台实例
 
 > 插件自动做的事：用新地址调 API、为当前 authcode 建立独立 WS 连接、面板显示状态。webhook 已退役，无需配置 `webhook_public_url`。
 
@@ -59,13 +59,16 @@ docker restart astrbot
 
 ### 多账号（多个平台实例）
 **一个平台实例 = 一个 `wpp_auth_token` = 一个微信账号。** Dashboard 里再添加一个
-「个人微信（Pad协议）」平台实例，`id` 唯一（如 `wpp-shop2`），
+「个人微信（Pad协议）」平台实例，`id` 唯一（如 `个人微信（Pad协议）-shop2`），
 `wpp_auth_token` 填另一个账号：
 
 ```text
-平台实例 个人微信（Pad协议）  id=wpp        (authcode A) ── 微信账号 A
-平台实例 个人微信（Pad协议）  id=wpp-shop2  (authcode B) ── 微信账号 B
+平台实例 个人微信（Pad协议）        id=个人微信（Pad协议）        (authcode A) ── 微信账号 A
+平台实例 个人微信（Pad协议）        id=个人微信（Pad协议）-shop2  (authcode B) ── 微信账号 B
 ```
+
+运行时目录分别为 `accounts/wpp/` 与 `accounts/wpp-shop2/`
+（`safe_account_id()` 把中文平台名前缀映射为 ASCII `wpp`）。
 
 同一个 authcode 不允许配到两个实例：后启动的实例会被拒绝
 （日志提示 `同一 authcode 已被平台实例 ... 使用`），避免两个 WS 互抢消息。
@@ -102,13 +105,80 @@ WPP 群白名单会自动同步到 Heartflow 的 `chat_whitelist`，有两种来
 - 账号登录后若 `online=false`，插件会自动调 AutoHeartBeat 拉上线
 - **WS 主通道**：连接建立即拉全量离线 + 实时消息；自动重连（指数退避 1s→30s），无需额外保活
 
-## v0.12.0 平台技术名迁回 `wpp`
+## v0.13.0 平台技术名恢复中文
 
-v0.11.0 曾把平台配置 `type`/`id` 改成中文「个人微信（Pad协议）」，这不符合
-AstrBot 对平台技术标识保持 ASCII 的约定（参照 `aiocqhttp`、`discord`）。
-v0.12.0 起 `type` 与默认 `id` 恢复为 `wpp`，Dashboard 展示名仍由
-`adapter_display_name` 提供为「个人微信（Pad协议）」。升级前先停容器，
-按以下顺序迁移（含 v0.11.x 运行时目录与插件目录残留清理）：
+AstrBot 4.29 Dashboard 的机器人列表和新增平台下拉直接显示平台技术名与配置
+`id`/`type`，不读取 `adapter_display_name`。v0.12.0 改成 ASCII `wpp` 后这两个
+位置也显示 `wpp`。v0.13.0 为满足 Dashboard 中文展示，把 `type` 与默认 `id`
+恢复为「个人微信（Pad协议）」。
+
+若生产环境已按 v0.12.0 迁移到 `wpp`，升级前先停容器并反向迁移（运行时目录
+`accounts/wpp/`、`webhooks/wpp.token` 不用动）：
+
+```bash
+docker stop astrbot
+DATA=/opt/1panel/apps/astrbot/astrbot/data
+TS=$(date +%Y%m%d-%H%M%S)
+BK="/data/astrbot-wpp-v013-zh-migration-$TS"
+mkdir -p "$BK"
+
+# 1. 备份配置/数据库(含 WAL/SHM)/Heartflow/插件数据
+cp "$DATA/cmd_config.json" "$BK/"
+cp "$DATA/data_v4.db"* "$BK/"
+cp "$DATA/config/astrbot_plugin_Heartflow_config.json" "$BK/"
+cp -a "$DATA/plugin_data/astrbot-plugin-wpp" "$BK/plugin-data"
+```
+
+2. 把 `cmd_config.json` 中该平台对象的 `type`/`id` 从 `wpp` 改为
+   `个人微信（Pad协议）`；多实例按实例后缀改回中文，如
+   `wpp-shop2` → `个人微信（Pad协议）-shop2`。保留 UTF-8 BOM，建议用
+   Python 脚本读改写。
+3. 迁移数据库 UMO/统计/会话/偏好（字符串含中文，用 Python `sqlite3` 执行）：
+
+```sql
+UPDATE platform_stats SET platform_id='个人微信（Pad协议）' WHERE platform_id='wpp';
+UPDATE provider_stats SET umo=replace(umo, 'wpp:', '个人微信（Pad协议）:') WHERE umo LIKE 'wpp:%';
+UPDATE conversations SET platform_id='个人微信（Pad协议）' WHERE platform_id='wpp';
+UPDATE conversations SET user_id=replace(user_id, 'wpp:', '个人微信（Pad协议）:') WHERE user_id LIKE 'wpp:%';
+UPDATE preferences SET scope_id=replace(scope_id, 'wpp:', '个人微信（Pad协议）:') WHERE scope_id LIKE 'wpp:%';
+UPDATE umo_aliases SET umo=replace(umo, 'wpp:', '个人微信（Pad协议）:') WHERE umo LIKE 'wpp:%';
+-- 会话内容里模型工具回显的 UMO
+UPDATE conversations SET content=replace(content, 'wpp:FriendMessage:', '个人微信（Pad协议）:FriendMessage:');
+UPDATE conversations SET content=replace(content, 'wpp:GroupMessage:', '个人微信（Pad协议）:GroupMessage:');
+```
+
+`preferences` 中键为 `umop_config_routing` 的全局值若是
+`{"val":{"wpp:*:*":"default"}}`，需把键改回 `个人微信（Pad协议）:*:*`。
+`platform_sessions` / `platform_message_history` 若已有数据，同步更新其
+`platform_id` 及含 UMO 的字段（生产环境通常为空）。
+4. Heartflow 配置里 `chat_whitelist` 的 `wpp:GroupMessage:*` 改为
+   `个人微信（Pad协议）:GroupMessage:*`（同步逻辑只替换当前平台前缀，旧前缀
+   不清理会残留）。
+5. 运行时目录**不需要迁移**：`safe_account_id()` 会把中文平台名前缀映射为
+   ASCII `wpp`，已有 `accounts/wpp/`、`webhooks/wpp.token` 继续可用。
+6. 部署 v0.13.0 代码并启动：
+
+```bash
+docker start astrbot
+docker logs --since 3m astrbot 2>&1 | grep -E 'WPP|个人微信|Traceback'
+```
+
+期望日志：
+
+```
+Loading IM platform adapter 个人微信（Pad协议）(个人微信（Pad协议）) ...
+[WPP] 账号已注册: id=个人微信（Pad协议） ...
+[WPP:个人微信（Pad协议）] 账号已在线: wxid=...
+[WPP:个人微信（Pad协议） WS] connected
+```
+
+## v0.12.0 平台技术名迁回 `wpp`（已被 v0.13.0 撤销）
+
+v0.11.0 曾把平台配置 `type`/`id` 改成中文「个人微信（Pad协议）」。v0.12.0
+曾改为 ASCII `wpp`，但 AstrBot 4.29 Dashboard 不读取 `adapter_display_name`，
+导致机器人列表/新增下拉显示 `wpp`。v0.13.0 已恢复中文，本节仅作历史参考，
+不要在新环境执行。升级前先停容器，按以下顺序迁移（含 v0.11.x 运行时目录与
+插件目录残留清理）：
 
 ```bash
 docker stop astrbot
@@ -181,7 +251,8 @@ Loading IM platform adapter wpp (个人微信（Pad协议）) ...
 [WPP:wpp WS] connected
 ```
 
-> 历史提示：v0.11.0 的反向迁移（`wpp` → 中文）已废弃，不要重复执行。
+> 历史提示：本节迁移已被 v0.13.0 撤销；需要从 `wpp` 迁回中文时，执行上方的
+> [v0.13.0 平台技术名恢复中文](#v0130-平台技术名恢复中文) 步骤。
 
 ## 开发迭代流程
 
@@ -226,14 +297,15 @@ git push origin master
 
 ### 收不到消息 / 不回复
 1. 看 vendor 日志：`docker logs knowhub-test-wechatpad-1` → 应见 `WebSocket已连接` + `增量聊天消息已分发`（WS 连接建立）
-2. 看 AstrBot 日志：`docker logs astrbot` → 应见 `[WPP:账号id WS] connected`（WS 已连）+ `event_bus [wpp(wpp)]`（收到）
+2. 看 AstrBot 日志：`docker logs astrbot` → 应见 `[WPP:账号id WS] connected`（WS 已连）+ `event_bus [个人微信（Pad协议）(...)]`（收到）
 3. 白名单：发送者 wxid 在 `wpp_allow_users`（或账号白名单）里吗？（日志 `消息被白名单/群策略过滤`）
 4. vendor push 格式：`{Data:{data:{messages:[...]}}}`（WS v1 格式）—— 如果格式变了，`_extract_all_msg_src` 要适配
 
 ### 群白名单已加，但未 @ 消息没有主动回复
 1. 文件传输助手发 `/help`：确认群白名单数量、生效主动候选数量；
 2. 确认只启用一个决策插件（Heartflow / 内置 `active_reply`），且其白名单
-   包含 `wpp:GroupMessage:<群ID>`（`/proactive list` 可查看 UMO）；
+   包含 `<平台实例id>:GroupMessage:<群ID>`（默认实例即
+   `个人微信（Pad协议）:GroupMessage:<群ID>`；`/proactive list` 可查看 UMO）；
 3. Heartflow `custom` 模式下，群必须同时在 WPP 群白名单中，否则启动日志会
    出现「已跳过同步」WARNING；先用 `/group add <群ID>`；
 4. 检查 Heartflow 的判断阈值/冷却（如 `reply_threshold=0.7`、

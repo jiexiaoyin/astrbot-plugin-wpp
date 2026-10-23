@@ -127,14 +127,14 @@ class TestAuthcodeLock(unittest.TestCase):
         self.assertEqual(len(adapter.get_stats()["accounts"]), 1)
 
     def test_platform_metadata_name(self):
-        """name/type 是 ASCII 技术标识; 中文名只走 adapter_display_name。"""
+        """Dashboard 机器人列表/新增下拉直接显示技术名，这里保持中文。"""
         adapter = WppPlatformAdapter(
             {"id": "wpp-meta", "wpp_auth_token": "tok"}, {}, asyncio.Queue()
         )
         meta = adapter.meta()
         self.assertEqual(meta.name, mod.PLATFORM_NAME)
         self.assertEqual(meta.adapter_display_name, mod.PLATFORM_DISPLAY_NAME)
-        self.assertEqual(meta.name, "wpp")
+        self.assertEqual(meta.name, "个人微信（Pad协议）")
         self.assertEqual(meta.adapter_display_name, "个人微信（Pad协议）")
 
     def test_send_routing_uses_single_account(self):

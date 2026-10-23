@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.13.0 (2026-10-23) — 平台技术名恢复中文，图标分离
+
+### 变更
+- **平台技术名恢复为「个人微信（Pad协议）」**：AstrBot 4.29 Dashboard 的机器人
+  列表和新增下拉直接显示平台技术名与配置 `id`/`type`，不读取
+  `adapter_display_name`。为了让这两个位置显示中文，`PlatformMetadata.name`、
+  配置 `type` 和默认 `id` 均使用中文。若已按 v0.12.0 改成 `wpp`，需反向迁移
+  平台配置、DB 中的 UMO/会话/统计/偏好和 Heartflow 白名单，步骤见
+  [DEPLOY.md](DEPLOY.md)。
+- **平台图标与插件图标分离**：机器人添加/列表使用 `logo-platform.png`
+  （黄色微信图标）；AstrBot 侧边栏扩展功能列表仍使用根目录 `logo.png`
+  （灰色微信线条图标）。此前 v0.12.0 误把两处都改成了灰色。
+- **运行时目录保持稳定 ASCII 前缀**：`safe_account_id()` 把平台名前缀
+  `个人微信（Pad协议）` 映射为 `wpp`，`-shop2` 等后缀映射为 `wpp-shop2`，
+  避免中文 id 被净化后多实例冲突；已有 `accounts/wpp/`、`webhooks/wpp.token`
+  无需迁移。UMO 前缀仍按实例 `id`（默认中文）。
+
+### 修复
+- 更新 README 中的平台实例、UMO、图标和多账号示例；补充 v0.13.0 反向迁移说明。
+- 测试覆盖中文平台名与 `safe_account_id()` 的中文实例映射。
+
 ## v0.12.0 (2026-10-23) — 平台技术名恢复 `wpp`，页面合并与规范修正
 
 ### 变更

@@ -1,6 +1,6 @@
 name: astrbot-plugin-wpp
 desc: 个人微信（Pad协议）适配器 (WeChatPadPro) for AstrBot
-version: 0.12.0
+version: 0.13.0
 author: jiexiaoyin
 astrbot_version: ">=4.16.0,<5"
 repo: https://github.com/jiexiaoyin/astrbot-plugin-wpp

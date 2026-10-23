@@ -284,7 +284,8 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 | `tests/` | 单元测试 (pytest, 在 AstrBot 容器内运行) |
 | `pages/console/` | WeChatPad Control Center (策略编辑/生效预览/Heartflow 同步 + 账号诊断 tab) |
 | `.astrbot-plugin/i18n/` | Dashboard 页面标题与显示名 (zh-CN / en-US) |
-| `logo.png` | 插件 + 平台适配器图标 |
+| `logo.png` | 插件扩展列表图标（灰色微信线条） |
+| `logo-platform.png` | 平台适配器图标（机器人添加/列表，黄色微信） |
 
 运行时数据（白名单、去重状态、群成员基线 `members.json`）写在 AstrBot 标准
 插件数据目录：`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/`。
@@ -355,22 +356,27 @@ docker exec -w /AstrBot/data/plugins astrbot \
 Dashboard 再添加一个「个人微信（Pad协议）」平台实例：
 
 ```text
-平台实例 wpp           (authcode A) ── 微信账号 A
-平台实例 wpp-shop2     (authcode B) ── 微信账号 B
+平台实例 个人微信（Pad协议）          (authcode A) ── 微信账号 A
+平台实例 个人微信（Pad协议）-shop2    (authcode B) ── 微信账号 B
 ```
 
 每个实例：
 - `id` 全平台唯一（决定 AstrBot UMO 前缀和运行时数据目录）；
 - `wpp_auth_token` 填该账号自己的 authcode；
 - 独立 WS 连接、白名单/私聊黑名单/群策略/群黑名单
-  （`data/plugin_data/astrbot-plugin-wpp/accounts/<实例 id>/wpp_whitelist.json`）；
+  （默认实例写入 `data/plugin_data/astrbot-plugin-wpp/accounts/wpp/wpp_whitelist.json`，
+  `-shop2` 等后缀实例写入对应的 `accounts/wpp-shop2/`）；
 - 独立 filehelper 命令、消息去重和机器人身份。
+
+> 运行时目录会把平台名前缀 `个人微信（Pad协议）` 映射为稳定的 ASCII `wpp`，
+> 避免中文实例 id 被净化后多个账号落到同一目录；这只是存储前缀，不影响
+> Dashboard 显示和 UMO 前缀。
 
 **同一个 authcode 只允许一个实例轮询**：重复配置时后启动的实例会报
 `同一 authcode 已被平台实例 ... 使用` 并拒绝启动，避免两个 WS 互抢消息。
 authcode 不能复用于多个账号，也不存在「一个 authcode 下挂多个微信」的配置。
 
-filehelper 命令输出带账号标识与版本（如 `【WPP 命令 · 账号 wpp · v<版本>】`），
+filehelper 命令输出带账号标识与版本（如 `【WPP 命令 · 账号 个人微信（Pad协议） · v<版本>】`），
 各实例命令互不影响。
 
 ### 🤖 主动回复（群聊未 @）
@@ -391,7 +397,7 @@ WPP 适配器只负责**准入**，不负责判断“要不要回复”。链路
    - 未配置群白名单、只想单独 opt-in 时，才用 `proactive_groups` / `/proactive add`
 2. 启用一个决策插件（**只开一个**）：
    - **Heartflow（推荐）**：`judge_provider_name` 指向便宜的判断模型，
-     `whitelist_enabled=true` + `chat_whitelist=["wpp:GroupMessage:123@chatroom"]`；
+     `whitelist_enabled=true` + `chat_whitelist=["个人微信（Pad协议）:GroupMessage:123@chatroom"]`；
      建议 `reply_threshold=0.7`、`min_reply_interval_seconds=180` 起步。
    - **内置 active_reply**：`provider_ltm_settings.active_reply.enable=true`，
      `method=possibility_reply`，`possibility_reply` 建议 0.05–0.1；
@@ -435,8 +441,8 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 <平台实例id>:GroupMessage:<群ID>
 ```
 
-例如 `wpp:GroupMessage:123@chatroom`。用 `/proactive list` 可直接看到每个群
-对应的 UMO；多个平台实例或自定义实例 id 时前缀会不同。
+例如 `个人微信（Pad协议）:GroupMessage:123@chatroom`。前缀就是平台实例 `id`；
+用 `/proactive list` 可直接看到每个群对应的 UMO，多实例或自定义实例 id 时前缀会不同。
 
 **自动同步（默认开启）**：WPP 会把各账号的群白名单（`auto` 模式下还包括
 显式 `proactive_groups`）同步到 Heartflow 的 `chat_whitelist`。同步结果始终
@@ -444,7 +450,8 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 
 - 群白名单非空时，同步目标会与群白名单取交集；白名单外的显式候选不会同步；
 - 群白名单为空（不限制群）时，`auto` 模式才使用显式 `proactive_groups`；
-- 只替换本平台的 `wpp:GroupMessage:` 条目，其他平台/手写条目保留；
+- 只替换本平台（`<平台实例id>:GroupMessage:`，默认实例即
+  `个人微信（Pad协议）:GroupMessage:`）的条目，其他平台/手写条目保留；
 - `/group`、`/proactive` 增删、外部修改 `wpp_whitelist.json` 热更新、适配器启动时都会同步；
 - 另外每 5 分钟幂等自愈一次，Heartflow 重载/配置被外部改写后能自动恢复；
 - 写盘后同时更新已加载的 Heartflow 实例，**无需重启**；
@@ -535,7 +542,7 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 ### 多账号会互相影响吗
 不会。多账号 = 多个「个人微信（Pad协议）」平台实例，每个实例独立 authcode、WS、白名单、
 黑名单、群策略、去重和 filehelper 命令；filehelper 输出会带实例/账号标识
-（如 `【WPP 命令 · 账号 wpp-shop2】`）。管理员命令可用实例 id 指定目标。
+（如 `【WPP 命令 · 账号 个人微信（Pad协议）-shop2】`）。管理员命令可用实例 id 指定目标。
 注意同一个 authcode 不能同时配到两个实例。
 
 ### 升级后如何确认生效
@@ -582,21 +589,25 @@ python -m compileall -q .
 | 依赖 | `aiohttp` + `websockets`（WS 主通道必需）|
 | WPP vendor | 提供 HTTP API 与 `/ws/sync` WebSocket；认证使用 authcode |
 | Heartflow | 可选；未安装时白名单同步自动跳过 |
-| 平台 ID | 默认实例 id 为 `wpp`，Heartflow UMO 前缀随实例 id 变化 |
+| 平台 ID | 默认实例 id 为 `个人微信（Pad协议）`，Heartflow UMO 前缀随实例 id 变化；运行时目录固定使用 ASCII `wpp` 前缀 |
 
 升级插件只需替换插件目录并重启 AstrBot；白名单和去重数据保存在
 `data/plugin_data/astrbot-plugin-wpp/`，不会因替换插件文件丢失。
 
-> ⚠️ **v0.12.0 升级**：平台技术名改回 **`wpp`**（显示名仍为「个人微信（Pad协议）」）。
-> 已有平台配置的 `type`/`id` 若为 `个人微信（Pad协议）`，需改回 `wpp`，并同步迁移
-> UMO、会话/统计/偏好数据和 Heartflow 白名单；迁移与残留清理步骤见
+> ⚠️ **v0.13.0 升级**：平台技术名恢复为 **`个人微信（Pad协议）`**。
+> AstrBot 4.29 Dashboard 的机器人列表/新增下拉直接显示平台技术名和配置
+> `id`/`type`，不读取 `adapter_display_name`；因此要让 Dashboard 显示中文，
+> 平台配置的 `type`/`id` 必须使用中文。若曾按 v0.12.0 改成 `wpp`，需把配置
+> `type`/`id`、DB 中的 UMO/平台字段和 Heartflow 白名单一起迁回中文；运行时
+> 数据目录与 webhook token 仍保持 `wpp` 前缀，**不需要迁移**。步骤见
 > [DEPLOY.md](DEPLOY.md)。
 >
 > ⚠️ **v0.10.0 升级**：`wpp_accounts` 单实例多账号配置已移除。若旧配置里用了
 > 它，请为每个账号各建一个「个人微信（Pad协议）」平台实例（`id` 唯一、各自填
 > `wpp_auth_token`）。运行时数据目录按实例 id 隔离；需要沿用旧
-> `accounts/<旧账号 id>/` 下的白名单/去重数据时，把该目录改名为
-> `accounts/<新实例 id>/`（仅单账号升级且实例 id 仍为 `wpp` 时无需处理）。
+> `accounts/<旧账号 id>/` 下的白名单/去重数据时，把该目录改名为对应实例的
+> 运行时目录（`accounts/wpp/`、`accounts/wpp-shop2/` 等；单账号且仍使用默认
+> 实例时无需处理）。
 
 ---
 

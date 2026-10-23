@@ -23,13 +23,26 @@ from typing import Any
 
 from astrbot import logger
 
+from .wpp_constants import PLATFORM_NAME, RUNTIME_ID_SLUG
+
 PLUGIN_NAME = "astrbot-plugin-wpp"
 _ACCOUNT_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 def safe_account_id(account_id: str) -> str:
-    """账号/实例 id 会拼进文件路径, 必须去掉路径分隔符/.. 等。"""
-    aid = _ACCOUNT_ID_RE.sub("_", str(account_id or "account")).strip("._") or "account"
+    """账号/实例 id 会拼进文件路径, 必须去掉路径分隔符/.. 等。
+
+    平台技术名是中文「个人微信（Pad协议）」；所有中文字符会被正则净化成
+    ``_``，导致多实例落到同一个 ``accounts/account``。这里先把平台名前缀
+    映射到稳定的 ASCII ``wpp``，既避免冲突，也沿用 v0.12.x 的运行时目录和
+    webhook token，不必迁移已有数据。
+    """
+    raw = str(account_id or "account")
+    if raw == PLATFORM_NAME:
+        raw = RUNTIME_ID_SLUG
+    elif raw.startswith(PLATFORM_NAME):
+        raw = RUNTIME_ID_SLUG + raw[len(PLATFORM_NAME) :]
+    aid = _ACCOUNT_ID_RE.sub("_", raw).strip("._") or "account"
     return aid[:64]
 
 

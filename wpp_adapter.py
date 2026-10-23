@@ -37,7 +37,11 @@ from astrbot.api.platform import (
 from astrbot.core.platform.message_session import MessageSession
 
 from .wpp_account import WppAccount
-from .wpp_constants import PLATFORM_DISPLAY_NAME, PLATFORM_NAME
+from .wpp_constants import (
+    PLATFORM_DISPLAY_NAME,
+    PLATFORM_LOGO_PATH,
+    PLATFORM_NAME,
+)
 from .wpp_event import WppMessageEvent
 from .wpp_heartflow import (
     HEARTFLOW_WHITELIST_MODES,
@@ -204,7 +208,7 @@ WPP_CONFIG_METADATA = {
     PLATFORM_NAME,
     "个人微信（Pad协议）适配器 (WeChatPadPro)",
     adapter_display_name=PLATFORM_DISPLAY_NAME,
-    logo_path="logo.png",
+    logo_path=PLATFORM_LOGO_PATH,
     support_streaming_message=False,
     default_config_tmpl={
         "wpp_base_url": "http://127.0.0.1:18062",
@@ -289,7 +293,7 @@ class WppPlatformAdapter(Platform):
             description=f"{PLATFORM_DISPLAY_NAME}适配器 (WeChatPadPro)",
             id=self.instance_id,
             adapter_display_name=PLATFORM_DISPLAY_NAME,
-            logo_path="logo.png",
+            logo_path=PLATFORM_LOGO_PATH,
             # WPP 不支持流式消息 (vendor 无消息编辑能力)
             support_streaming_message=False,
             support_proactive_message=True,

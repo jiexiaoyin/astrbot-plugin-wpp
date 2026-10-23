@@ -459,6 +459,14 @@ class TestStorage(unittest.TestCase):
         self.assertEqual(storage.safe_account_id("../evil/x"), "evil_x")
         self.assertEqual(storage.safe_account_id(""), "account")
 
+    def test_safe_account_id_keeps_chinese_platform_instances_isolated(self):
+        suffix = "个人微信（Pad协议）"
+        self.assertEqual(storage.safe_account_id(suffix), "wpp")
+        self.assertEqual(
+            storage.safe_account_id(f"{suffix}-shop2"),
+            "wpp-shop2",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
