@@ -46,6 +46,9 @@ VOICE_MAX_MS = 60_000
 # SILK 码率阶梯: 微信/厂商实测 6k~24kbps 均可正常播放, 按容量从高到低选,
 # 让 ≤60s 的分段尽量以高码率发进 vendor 的 64,500B payload 上限
 SILK_BIT_RATES = (24_000, 16_000, 12_000, 10_000, 9_000, 8_000, 6_000)
+# ffmpeg/ffprobe 单次调用时限: 损坏/异常输入可能让子进程永久挂起,
+# 而语音发送持有会话锁, 挂起会卡死该会话的全部后续回复。
+MEDIA_TOOL_TIMEOUT_SECONDS = 60.0
 
 
 # --------------------------------------------------------------------------- 分片
@@ -194,8 +197,8 @@ async def _send_chain_locked(
     async def flush_text() -> None:
         nonlocal ats, pending_reply
         if not text_buf:
-            ats = []
-            pending_reply = None
+            # 没有文本可发时不要丢掉 @ / 引用: [At, Image]、[Reply, Image]
+            # 这类链在媒体前会触发一次空 flush, 清掉后下一段文本就少了 @/引用。
             return
         text = "\n".join(t for t in text_buf if t)
         text_buf.clear()
@@ -688,10 +691,48 @@ def _silk_encode_fit(pysilk: Any, pcm: bytes) -> bytes | None:
     return None
 
 
+def _kill_media_tool(proc: asyncio.subprocess.Process) -> None:
+    try:
+        proc.kill()
+    except (ProcessLookupError, RuntimeError):
+        pass
+
+
+async def _run_media_tool(*args: str) -> tuple[int, bytes]:
+    """运行 ffmpeg/ffprobe 并限时, 返回 (returncode, stdout)。
+
+    超时或被取消时杀掉子进程并返回 (-1, b"")。损坏的媒体文件可能让
+    ffmpeg 无限等待, 而调用方持有会话锁, 不能让它一直挂着。
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=MEDIA_TOOL_TIMEOUT_SECONDS
+        )
+    except asyncio.CancelledError:
+        _kill_media_tool(proc)
+        raise
+    except TimeoutError:
+        logger.warning(
+            f"[WPP] {args[0]} 调用超时 ({MEDIA_TOOL_TIMEOUT_SECONDS:.0f}s), 已终止子进程"
+        )
+        _kill_media_tool(proc)
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except (TimeoutError, ProcessLookupError):
+            pass
+        return -1, b""
+    return (proc.returncode if proc.returncode is not None else -1), stdout
+
+
 async def _decode_pcm_24k(path: str) -> bytes:
     """用 ffmpeg 解码成 24kHz 单声道 s16le PCM。"""
     try:
-        proc = await asyncio.create_subprocess_exec(
+        code, stdout = await _run_media_tool(
             "ffmpeg",
             "-v",
             "error",
@@ -704,11 +745,8 @@ async def _decode_pcm_24k(path: str) -> bytes:
             "-ar",
             "24000",
             "-",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
-        return stdout if proc.returncode == 0 else b""
+        return stdout if code == 0 else b""
     except Exception:  # noqa: BLE001
         return b""
 
@@ -729,7 +767,7 @@ async def _audio_duration_ms(path: str, ext: str) -> int:
 
 async def _ffprobe_duration_ms(path: str) -> int:
     try:
-        proc = await asyncio.create_subprocess_exec(
+        code, stdout = await _run_media_tool(
             "ffprobe",
             "-v",
             "error",
@@ -738,11 +776,8 @@ async def _ffprobe_duration_ms(path: str) -> int:
             "-of",
             "default=noprint_wrappers=1:nokey=1",
             path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
-        if proc.returncode == 0 and stdout.strip():
+        if code == 0 and stdout.strip():
             return int(float(stdout.decode().strip()) * 1000)
     except Exception:  # noqa: BLE001 - 没有 ffprobe 时走内置解析
         pass

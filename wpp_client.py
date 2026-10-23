@@ -48,6 +48,10 @@ MAX_PACE_ENTRIES = 2000
 # 出站消息节流 (同一会话两次 vendor 发送的最小间隔)
 DEFAULT_SEND_INTERVAL_SECONDS = 0.3
 
+# 视频分片下载总时限: 单分片超时 30s, 但分片数量没有上限 (vendor 报的
+# data_len 不可信)。没有总时限时, 异常长视频会无限占用消息 worker。
+VIDEO_DOWNLOAD_TIMEOUT_SECONDS = 600.0
+
 # 这些端点会真正发消息; 统一在 _post 层做同会话串行 + 节流。
 _SEND_ENDPOINTS = frozenset(
     {
@@ -340,7 +344,7 @@ class WppClient:
                     return json.loads(text)
                 except json.JSONDecodeError:
                     return {"Code": -2, "Success": False, "Message": f"非JSON响应: {text[:200]}"}
-        except aiohttp.ClientError as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             return {"Code": -3, "Success": False, "Message": f"网络错误: {e}"}
 
     async def get_contract_profile(self) -> dict:
@@ -363,7 +367,7 @@ class WppClient:
                     return json.loads(text)
                 except json.JSONDecodeError:
                     return {"Code": -2, "Success": False, "Message": f"非JSON响应: {text[:200]}"}
-        except aiohttp.ClientError as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             return {"Code": -3, "Success": False, "Message": f"网络错误: {e}"}
 
     # ------------------------------------------------------------ 昵称解析
@@ -478,6 +482,31 @@ class WppClient:
         if time.monotonic() - ts < ttl:
             return profile
         return None
+
+    def mark_group_profile_failure(self, chatroom_id: str) -> None:
+        """写入群资料失败负缓存。
+
+        调用方 (WppAccount 预取) 可能在外层 ``wait_for`` 超时时取消本方法的下游
+        查询，导致 ``get_group_profile`` 来不及在自己的末尾写缓存。这里补一条
+        60s 负缓存，避免 vendor 变慢时每条群消息都白等一次预取超时。
+        """
+        chatroom_id = str(chatroom_id or "").strip()
+        if not chatroom_id:
+            return
+        self._group_cache[chatroom_id] = (
+            {"name": "", "owner": "", "avatar": "", "members": {}, "member_count": 0},
+            time.monotonic(),
+            False,
+        )
+        self._prune_group_cache()
+
+    def mark_nickname_failure(self, wxid: str, chatroom_id: str = "") -> None:
+        """写入昵称失败负缓存 (60s)，用途同 :meth:`mark_group_profile_failure`。"""
+        wxid = str(wxid or "").strip()
+        if not wxid:
+            return
+        self._nickname_cache[(str(chatroom_id or ""), wxid)] = ("", time.monotonic())
+        self._prune_nickname_cache()
 
     async def get_group_profile(self, chatroom_id: str) -> dict:
         """预取群资料: 群名/群主/头像/成员昵称表。
@@ -660,7 +689,7 @@ class WppClient:
                     return json.loads(text)
                 except json.JSONDecodeError:
                     return {"Code": -2, "Success": False, "Message": f"非JSON响应: {text[:200]}"}
-        except aiohttp.ClientError as e:
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
             return {"Code": -3, "Success": False, "Message": f"网络错误: {e}"}
 
     # ------------------------------------------------------------------ 文件下载
@@ -705,9 +734,11 @@ class WppClient:
                         logger.warning(f"[WPP] file too large (> {MAX_FILE_BYTES} bytes), skip")
                         return None
                 if len(buf) < 10:
+                    logger.debug("[WPP] download_file_binary: 响应过短, 视为失败")
                     return None
                 return bytes(buf)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] download_file_binary failed: {e}")
             return None
 
     # ------------------------------------------------------------------ 语音下载
@@ -769,9 +800,11 @@ class WppClient:
                         logger.warning("[WPP] voice too large (> 20MB), skip")
                         return None
                 if len(buf) < 10:
+                    logger.debug("[WPP] download_voice_binary: 响应过短, 视为失败")
                     return None
                 return bytes(buf)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] download_voice_binary failed: {e}")
             return None
 
     # ------------------------------------------------------------------ 视频下载
@@ -797,10 +830,19 @@ class WppClient:
         chunks: list[bytes] = []
         start_pos = 0
         total_len = data_len
+        total_bytes = 0
+        deadline = time.monotonic() + VIDEO_DOWNLOAD_TIMEOUT_SECONDS
         CHUNK = 1024 * 1024  # 1MB 每段
         MAX_VIDEO_BYTES = 200 * 1024 * 1024
         try:
             while start_pos < total_len:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        f"[WPP] 视频下载超过 {VIDEO_DOWNLOAD_TIMEOUT_SECONDS:.0f}s, 放弃: "
+                        f"{start_pos}/{total_len} bytes"
+                    )
+                    return None
                 section_len = min(CHUNK, total_len - start_pos)
                 body: dict = {
                     "to_wxid": to_wxid,
@@ -813,7 +855,7 @@ class WppClient:
                     url,
                     json=body,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                    timeout=aiohttp.ClientTimeout(total=min(self.timeout, remaining)),
                 ) as resp:
                     if resp.status != 200:
                         return None
@@ -826,19 +868,24 @@ class WppClient:
                         total_len = int(d["totalLen"])
                     b64 = (d.get("data") or {}).get("buffer") or d.get("Video") or ""
                     if not b64:
+                        logger.warning(
+                            f"[WPP] download_video: vendor 返回空分片 "
+                            f"({start_pos}/{total_len}) ret={(d.get('BaseResponse') or {}).get('ret')}"
+                        )
                         return None
                     chunk = base64.b64decode(b64)
                     if not chunk:
                         return None
                     chunks.append(chunk)
                     start_pos += len(chunk)
-                    total_bytes = sum(len(c) for c in chunks)
+                    total_bytes += len(chunk)
                     if total_bytes > MAX_VIDEO_BYTES:
                         return None
             if not chunks:
                 return None
             return b"".join(chunks)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] download_video failed: {e}")
             return None
 
     # ------------------------------------------------------------------ 图片下载
@@ -857,7 +904,8 @@ class WppClient:
             if not image:
                 return None
             return base64.b64decode(image)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] download_image_cdn failed: {e}")
             return None
 
     async def download_image(self, msg_id: str, to_wxid: str, data_len: int = 0) -> bytes | None:
@@ -884,7 +932,8 @@ class WppClient:
             if not buf:
                 return None
             return base64.b64decode(buf)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP] download_image failed: {e}")
             return None
 
     # ------------------------------------------------------------------ 心跳
@@ -930,12 +979,23 @@ class WppClient:
         # 非幂等: 网络错误不重试, 避免重复发送
         return await self._post("/Msg/SendTxt", body, retry_safe=False)
 
-    async def send_app_xml(self, to_wxid: str, xml: str, app_type: int = 5) -> dict:
+    async def send_app_xml(
+        self,
+        to_wxid: str,
+        xml: str,
+        app_type: int = 5,
+        *,
+        bypass_repeat_guard: bool = False,
+    ) -> dict:
         """POST /api/Msg/ShareLink — 发送 appmsg XML (引用回复/链接卡片)。
 
         引用回复: Type=5 + Xml 内 `<type>57</type>` (vendor /Msg/Quote 不可用时的
         gewe 范式, 见 wpp-openclaw quote-reply.js)。
+        与 send_text 共用出站复读保护: 引用回复此前完全绕过该保护,
+        AI 复读同一条引用会在群里刷屏。
         """
+        if not bypass_repeat_guard and self.should_skip_repeat(to_wxid, xml):
+            return {"Code": 0, "Skipped": True, "Reason": "outbound_repeat_guard"}
         return await self._post(
             "/Msg/ShareLink",
             {"ToWxid": to_wxid, "Type": app_type, "Xml": xml},
@@ -976,7 +1036,11 @@ class WppClient:
         )
 
     async def send_file(self, to_wxid: str, filename: str, data: bytes) -> dict:
-        """POST /api/Msg/SendFile — 上传并发送文件。"""
+        """POST /api/Msg/SendFile — 上传并发送文件。
+
+        文件上限 100MB，base64 后体积更大，固定 30s 总超时不够用；
+        与图片/语音一致，给大媒体放宽到至少 180s。
+        """
         return await self._post(
             "/Msg/SendFile",
             {
@@ -985,6 +1049,7 @@ class WppClient:
                 "Base64": base64.b64encode(data).decode(),
             },
             retry_safe=False,
+            timeout=max(self.timeout, 180.0),
         )
 
     async def send_video(self, to_wxid: str, data: bytes, play_length: int = 0) -> dict:
@@ -997,6 +1062,7 @@ class WppClient:
                 "PlayLength": int(play_length or 0),
             },
             retry_safe=False,
+            timeout=max(self.timeout, 180.0),
         )
 
     async def send_voice(
@@ -1128,34 +1194,16 @@ class WppClient:
 
     @staticmethod
     def _is_allowed_image_url(url: str) -> bool:
-        """SSRF 白名单: 仅放行微信/腾讯系图片 CDN 域名 (AI 可能返回的图片 URL 来源)。
+        """SSRF 白名单: 仅放行微信/腾讯系图片 CDN 域名。
 
-        默认白名单:
-          - *.qlogo.cn (微信头像/图片 CDN)
-          - wx.qlogo.cn / mmbiz.qpic.cn (微信素材)
-          - *.myqcloud.com (腾讯云 COS, AI 生成的图可能存这里)
-          - 127.0.0.1 / localhost (本机调试)
-        其它域名一律拒绝 (防 AI 被 prompt injection 诱导请求内网/任意外部地址)。
+        精确匹配域名本身或它的子域。不能直接用 ``host.endswith("qlogo.cn")``:
+        ``evilqlogo.cn`` 也会匹配, 等于白名单形同虚设。
+        本机/回环地址一律拒绝 —— 本地图片应直接传文件路径, 不走 HTTP。
         """
         import urllib.parse
 
-        host = urllib.parse.urlparse(url).hostname or ""
-        host = host.lower()
-        # 明确拒绝 IP 字面量 (除回环)
-        if host and host not in ("127.0.0.1", "localhost", "::1"):
-            import ipaddress
-
-            try:
-                ipaddress.ip_address(host)
-                return False  # 非回环 IP 直接拒绝
-            except ValueError:
-                pass  # 是域名, 走下面后缀匹配
-        allowed_suffixes = (
-            ".qlogo.cn",
-            ".qpic.cn",
-            ".myqcloud.com",
-            "qlogo.cn",
-            "qpic.cn",
-            "myqcloud.com",
-        )
-        return host in ("127.0.0.1", "localhost", "::1") or host.endswith(allowed_suffixes)
+        host = (urllib.parse.urlparse(url).hostname or "").lower().rstrip(".")
+        if not host:
+            return False
+        allowed_domains = ("qlogo.cn", "qpic.cn", "myqcloud.com")
+        return any(host == d or host.endswith("." + d) for d in allowed_domains)

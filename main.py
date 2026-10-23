@@ -239,7 +239,7 @@ class WppPlugin(Star):
     async def web_policy_update(self):
         payload = await request.json(default={})
         payload = payload if isinstance(payload, dict) else {}
-        inst, acct = self._find_account(
+        _inst, acct = self._find_account(
             str(payload.get("instance_id", "") or "").strip(),
             str(payload.get("account_id", "") or "").strip(),
         )
@@ -308,12 +308,11 @@ class WppPlugin(Star):
                 return error_response(f"{flag} 必须是布尔值")
         for field, value in updates.items():
             setattr(acct, field, value)
-        if updates and not acct.save_policy():
+        # save_policy_async 内部已同步 Heartflow 白名单, 不重复调用。
+        if updates and not await acct.save_policy_async():
             return error_response(
                 "策略已应用到当前运行，但写入配置文件失败（重启后会丢失），请检查磁盘权限与日志"
             )
-        if inst is not None:
-            inst.sync_heartflow_whitelist("dashboard")
         return json_response({"ok": True, "account": self._account_policy_view(acct)})
 
     async def web_heartflow_sync(self):
@@ -532,7 +531,7 @@ class WppPlugin(Star):
 
         account_id, field, action = parts[1], parts[2], parts[3].lower()
         values = parts[4:]
-        inst, acct = self._find_account(account_id=account_id)
+        _inst, acct = self._find_account(account_id=account_id)
         if acct is None:
             yield event.plain_result(f"未找到 WPP 账号: {account_id}")
             return
@@ -571,13 +570,12 @@ class WppPlugin(Star):
             yield event.plain_result(f"不支持的字段: {field}")
             return
 
-        if not acct.save_policy():
+        # save_policy_async 内部已同步 Heartflow 白名单。
+        if not await acct.save_policy_async():
             yield event.plain_result(
                 "⚠️ 策略已应用到当前运行，但写入配置文件失败（重启后会丢失），请检查磁盘权限与日志"
             )
             return
-        if inst is not None:
-            inst.sync_heartflow_whitelist("command")
         yield event.plain_result(
             f"已更新 {account_id}: group_reply={acct.group_reply} "
             f"allow={sorted(acct.allow_users)} "

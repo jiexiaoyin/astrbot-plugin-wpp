@@ -630,7 +630,7 @@
             <details class="editor" ${openEditors.has(key) ? "open" : ""}>
               <summary>
                 <span>编辑策略</span>
-                <span class="hint">私聊 ${privateUsers.length} · 群 ${groups.length} · ${esc(account.group_reply)}${account.require_at_mention ? " · 必须@" : ""}</span>
+                <span class="hint">私聊 ${account.private_allow_all ? "全部放行" : `${privateUsers.length} 人`} · 群 ${groups.length} · ${esc(account.group_reply)}${account.require_at_mention ? " · 必须@" : ""}</span>
                 <span class="chev"></span>
               </summary>
               <div class="form">
@@ -640,7 +640,7 @@
                     <label class="field">
                       <span>私聊白名单 <em>${privateUsers.length} 人</em></span>
                       <textarea data-field="private_users" placeholder="wxid，逗号或换行分隔">${esc(listText(privateUsers))}</textarea>
-                      <div class="hint">留空 = 私聊全部放行（黑名单除外）。</div>
+                      <div class="hint">默认只回复名单内的私聊；留空且未开启下方开关时，私聊一律不回复。</div>
                     </label>
                     <label class="field">
                       <span>私聊黑名单 <em>${(account.block_users || []).length} 人</em></span>
@@ -648,6 +648,13 @@
                       <div class="hint">群内该成员的消息也会被屏蔽。</div>
                     </label>
                   </div>
+                  <label class="switch">
+                    <input type="checkbox" data-field="private_allow_all" ${account.private_allow_all ? "checked" : ""} />
+                    <span>
+                      <b>私聊全部放行（fail-open）</b>
+                      <small>默认关闭（fail-closed）：只有私聊白名单内的人能触发 AI。开启后除黑名单外全部放行。</small>
+                    </span>
+                  </label>
                 </div>
                 <div class="section">
                   <div class="section-title">群聊准入</div>
@@ -764,6 +771,7 @@
           proactive: parseList(get("proactive_groups")?.value),
           mode: get("group_reply")?.value || "atbot",
           requireAt: checked,
+          privateAllowAll: get("private_allow_all")?.checked ?? false,
         };
       }
 
@@ -792,7 +800,7 @@
         }
         const hint = card.querySelector(".editor > summary .hint");
         if (hint) {
-          hint.textContent = `私聊 ${v.privateUsers.length} · 群 ${v.groups.length} · ${v.mode}${v.requireAt ? " · 必须@" : ""}`;
+          hint.textContent = `私聊 ${v.privateAllowAll ? "全部放行" : `${v.privateUsers.length}`} · 群 ${v.groups.length} · ${v.mode}${v.requireAt ? " · 必须@" : ""}`;
         }
       }
 
@@ -834,6 +842,7 @@
           proactive_groups: v.proactive,
           group_reply: v.mode,
           require_at_mention: v.requireAt,
+          private_allow_all: v.privateAllowAll,
         };
         btn.disabled = true;
         msg.className = "msg";

@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.15.0 (2026-10-23) — 超时/事件循环加固与 webhook fail-closed
+
+### 修复
+- **预取失败负缓存**：群资料/昵称预取在取消、超时路径上也会写 60s 负缓存，
+  不再每条消息都重打 vendor（前版只在函数正常结束时写）。
+- **发送超时**：`send_file` / `send_video` 放宽到 180s（100MB base64 上传
+  30s 不够）；视频分片下载增加 600s 总时限，避免异常视频无限占用 worker。
+- **ffmpeg/ffprobe 限时**：语音解码/探测 60s 超时即杀子进程，损坏媒体不再
+  让持有会话锁的发送流程永久挂起。
+- **事件循环不再被 fsync 阻塞**：去重落盘、策略保存、群成员基线、进群欢迎
+  开关全部移入线程池；成员基线增加账号级锁避免交叉写坏快照。
+- **SSRF 白名单后缀漏洞**：裸 `endswith("qlogo.cn")` 会放过 `evilqlogo.cn`；
+  改为精确域名/子域匹配，并移除 `127.0.0.1`/`localhost` 放行。
+- **webhook fail-closed**：`webhook_secret` 为空拒绝启动 webhook；回调只接受
+  HMAC-SHA256，拒绝 md5/sha1 降级；签名失败/path 不匹配日志不再输出 URL token。
+- **filehelper 命令方向校验**：只认「发往文件助手」的消息；`sender=filehelper`
+  不再触发管理命令；vendor 明确标为 incoming 的请求直接拒绝执行。
+- **WS 重连退避**：连接稳定 30s 后才重置为 1s，连上即断不再形成重连风暴。
+- **引用回复复读保护**：`send_app_xml` 与文本共用出站复读保护。
+- **At/引用丢失**：媒体前的空 `flush_text` 不再清掉待发送的 At 与 Reply。
+- **查询接口超时**：`get_online_info` / `get_contract_profile` /
+  `get_long_link_status` 捕获 `asyncio.TimeoutError`，不再冒出未处理异常。
+- **可观测性**：账号 `stats` 暴露累计 filtered/ignored/dropped/observed；
+  下载辅助函数失败不再静默 `return None`。
+
+### 变更
+- 控制台账号卡片新增「私聊全部放行（fail-open）」开关，直接对应
+  `wpp_private_allow_all`，并在预览中显示私聊模式。
+- `deploy.sh` 只拷贝运行所需文件（排除 tests/.git/.github/缓存/data），并改为
+  整目录替换，已删除/改名的模块不会残留。
+- CI 增加 pytest job（在 `soulter/astrbot:v4.29.1` 镜像内运行）。
+- 文档：补充 DEPLOY v0.14.0 升级说明（私聊 fail-closed、webhook 必须配密钥）；
+  README 修正容器内测试路径、插件名与发送链路冒烟说明。
+
 ## v0.14.0 (2026-10-23) — 安全加固、生命周期修复与插件名合规
 
 ### 变更

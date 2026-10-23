@@ -56,8 +56,10 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
    把群 ID 加入群白名单后，该群自动成为主动回复候选（见
    [主动回复](#-主动回复群聊未-)）。
 
-最小可用配置只有 `base_url + authcode + ws_url`。白名单为空时私聊全部放行、
-群聊按 `wpp_group_reply`（默认 `atbot`）处理，建议上线前先配置白名单。
+最小可用配置只有 `base_url + authcode + ws_url`。**私聊默认拒绝**（fail-closed）：
+白名单为空时不会回复任何私聊，需要全部放行必须显式开启 `wpp_private_allow_all`
+（控制台「私聊全部放行」开关）。群聊按 `wpp_group_reply`（默认 `atbot`）处理。
+建议上线前先配置白名单。
 
 ---
 
@@ -318,8 +320,8 @@ docker logs --since 60s astrbot 2>&1 | grep -E "astrbot_plugin_wpp|账号已在�
 ### 测试（容器内运行，插件依赖 AstrBot 运行时）
 
 ```bash
-docker exec -w /AstrBot/data/plugins astrbot \
-  python -m pytest -q astrbot-plugin-wpp/tests
+docker exec -w /AstrBot/data/plugins/astrbot_plugin_wpp astrbot \
+  python -m pytest -q tests
 ```
 
 ---
@@ -331,6 +333,7 @@ docker exec -w /AstrBot/data/plugins astrbot \
 | `wpp_base_url` | ✅ | WPP API 地址（如 `http://<vendor-ip>:28062`）|
 | `wpp_auth_token` | ✅ | WPP X-Access-Token（= authcode）；一个实例只能填一个，对应一个微信账号 |
 | `wpp_allow_users` | — | 白名单 wxid / 群 ID（逗号分隔）；`@chatroom` 群ID 同时作为群白名单和主动回复候选 |
+| `wpp_private_allow_all` | — | 私聊全部放行（默认 `false` = fail-closed）。开启后除 `wpp_block_users` 外所有私聊都进入 AstrBot |
 | `wpp_block_users` | — | 私聊黑名单 wxid（逗号分隔），全部放行时排除指定人；群聊里也屏蔽该成员 |
 | `wpp_group_reply` | — | 群消息准入策略: `atbot` / `none` / `all`（`all`=放行所有群消息，观察模式，不强制回复）|
 | `wpp_proactive_groups` | — | 额外主动候选群（逗号分隔群 ID）；群白名单已自动共用，通常无需填写 |
@@ -546,7 +549,8 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 注意同一个 authcode 不能同时配到两个实例。
 
 ### 升级后如何确认生效
-查看启动日志中的 `Plugin astrbot-plugin-wpp (x.y.z)`，或在文件传输助手发
+查看启动日志中的 `Plugin astrbot_plugin_wpp (x.y.z)`（旧版本目录名带连字符，
+日志会是 `Plugin astrbot-plugin-wpp`），或在文件传输助手发
 `/help` 查看版本与策略摘要。
 
 ---
@@ -555,12 +559,14 @@ Heartflow 白名单使用 `unified_msg_origin`，格式为：
 
 ```bash
 # 单元测试（插件依赖 AstrBot 运行时，建议在容器内执行）
-docker exec -w /AstrBot/data/plugins astrbot \
-  python -m pytest -q astrbot-plugin-wpp/tests
+docker exec -w /AstrBot/data/plugins/astrbot_plugin_wpp astrbot \
+  python -m pytest -q tests
 
-# 真实主路径冒烟（适配器解析 → 准入 → 事件 → 发送）
-docker exec -w /AstrBot/data/plugins astrbot \
-  python -m pytest -q astrbot-plugin-wpp/tests/test_mainpath_smoke.py
+# 真实主路径冒烟:
+#   入站 test_mainpath_smoke.py: 解析 → 准入 → 事件
+#   出站 test_send.py: 事件 → send_chain → WppClient → vendor 请求
+docker exec -w /AstrBot/data/plugins/astrbot_plugin_wpp astrbot \
+  python -m pytest -q tests/test_mainpath_smoke.py tests/test_send.py
 
 # 静态检查
 ruff check .

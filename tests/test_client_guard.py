@@ -343,5 +343,40 @@ class TestImageResolveLimits(unittest.IsolatedAsyncioTestCase):
             await client._resolve_image_to_base64(payload)
 
 
+class TestImageUrlAllowlist(unittest.TestCase):
+    """SSRF 白名单: 子域匹配不能退化成裸后缀匹配。"""
+
+    def test_allows_tencent_cdn_domains(self):
+        for url in (
+            "https://qlogo.cn/a.png",
+            "https://wx.qlogo.cn/a.png",
+            "https://mmbiz.qpic.cn/a.png",
+            "https://bucket-1.cos.ap-guangzhou.myqcloud.com/a.png",
+        ):
+            with self.subTest(url=url):
+                self.assertTrue(client_mod.WppClient._is_allowed_image_url(url))
+
+    def test_rejects_lookalike_domains(self):
+        for url in (
+            "https://evilqlogo.cn/a.png",
+            "https://evilqpic.cn/a.png",
+            "https://myqcloud.com.evil.com/a.png",
+            "https://qpic.cn.attacker.net/a.png",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(client_mod.WppClient._is_allowed_image_url(url))
+
+    def test_rejects_loopback_and_private_addresses(self):
+        for url in (
+            "http://127.0.0.1:8080/a.png",
+            "http://localhost/a.png",
+            "http://[::1]/a.png",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/a.png",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(client_mod.WppClient._is_allowed_image_url(url))
+
+
 if __name__ == "__main__":
     unittest.main()

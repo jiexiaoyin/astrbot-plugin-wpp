@@ -327,10 +327,14 @@ def src_is_incoming(src: dict) -> bool:
 
 
 def src_is_filehelper(src: dict) -> bool:
+    """是否发往「文件传输助手」的消息 (机器人自己的管理命令通道)。
+
+    只看收件人/会话: sender=filehelper 的消息是文件助手发来的, 不是
+    本机发出的命令, 不能据此执行管理命令。
+    """
     return (
         src_recipient(src) == "filehelper"
         or safe_str(src.get("conversation_id")) == "filehelper"
-        or src_sender(src) == "filehelper"
     )
 
 

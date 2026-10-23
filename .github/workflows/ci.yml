@@ -19,3 +19,17 @@ jobs:
         run: ruff check .
       - name: Byte-compile
         run: python -m compileall -q main.py wpp_*.py
+
+  # 测试依赖 astrbot 包 (事件/组件类型), 宿主机没有 ⇒ 直接跑在官方镜像里,
+  # 与生产容器版本保持一致。
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests in AstrBot container
+        run: |
+          docker run --rm \
+            -v "$PWD:/tmp/astrbot_plugin_wpp" \
+            -w /tmp/astrbot_plugin_wpp \
+            soulter/astrbot:v4.29.1 \
+            python -m pytest tests -q

@@ -208,7 +208,7 @@ WPP_CONFIG_METADATA = {
     "wpp_webhook_enabled": {
         "description": "是否启用 webhook 兜底通道",
         "type": "bool",
-        "hint": "默认 false=仅 WS (推荐)。true=额外开 webhook server + vendor 注册 (WS 断时 webhook 也收不到, 实际无用)",
+        "hint": "默认 false=仅 WS (推荐)。true=额外开 webhook server + vendor 注册；必须同时填写 webhook_secret，否则拒绝启动 (fail-closed)。",
     },
     "webhook_host": {
         "description": "webhook 监听地址",
@@ -240,7 +240,7 @@ WPP_CONFIG_METADATA = {
         "description": "webhook HMAC 密钥",
         "type": "string",
         "secret": True,
-        "hint": "强烈建议填写：vendor 注册回调时用于签名，插件收到请求时校验 HMAC。留空则仅靠 URL token 鉴权。",
+        "hint": "启用 webhook 时必填：vendor 注册回调时用于签名，插件只接受 HMAC-SHA256。留空时 webhook 拒绝启动 (fail-closed)。",
     },
 }
 
@@ -531,6 +531,14 @@ class WppPlatformAdapter(Platform):
 
     async def _start_webhook_server(self) -> None:
         """启动 webhook server + 注册 vendor (webhook 已退役, 仅向后兼容)。"""
+        if not self.webhook_secret:
+            # fail-closed: 仅靠 URL token 鉴权时, token 一旦出现在日志/反向代理
+            # 访问记录里就等于无鉴权, 任何人可伪造消息触发 AI 与指令。
+            logger.error(
+                "[WPP] wpp_webhook_enabled=true 但 webhook_secret 为空，已拒绝启动 "
+                "webhook（fail-closed）。请设置 HMAC 密钥，或保持 WS 主通道。"
+            )
+            return
         from aiohttp import web
 
         app = web.Application()
@@ -547,12 +555,6 @@ class WppPlatformAdapter(Platform):
             f"[WPP] webhook server started at "
             f"http://{self.webhook_host}:{self.webhook_port}{safe_path}"
         )
-        if not self.webhook_secret:
-            logger.warning(
-                "[WPP] webhook_secret 为空：回调仅靠 URL token 鉴权，"
-                "建议在平台配置里设置 HMAC 密钥"
-            )
-
         if not self.accounts:
             return
         # 用第一个账号的 api 注册 webhook (best-effort)
@@ -728,7 +730,8 @@ class WppPlatformAdapter(Platform):
 
         req_path = request.path
         if req_path.rstrip("/") != self.webhook_path:
-            logger.warning(f"[WPP] webhook path mismatch: {req_path}")
+            # 路径里含 URL token, 不写日志 (等价于回调凭证)。
+            logger.warning("[WPP] webhook path mismatch (token 不落日志)")
             return web.Response(status=404)
 
         try:
@@ -746,7 +749,7 @@ class WppPlatformAdapter(Platform):
                 or ""
             )
             if not sig or not self._verify_webhook_signature(raw, sig, self.webhook_secret):
-                logger.warning(f"[WPP] webhook signature verify failed: path={req_path}")
+                logger.warning("[WPP] webhook signature verify failed")
                 return web.Response(status=403)
 
         acct = self.account
@@ -761,20 +764,22 @@ class WppPlatformAdapter(Platform):
 
     @staticmethod
     def _verify_webhook_signature(raw_body: str, signature: str, secret: str) -> bool:
+        """校验 HMAC-SHA256; 拒绝 md5/sha1 降级签名。"""
         import hashlib
 
-        algo = "sha256"
-        sig_value = signature
-        for prefix, a in (("sha256=", "sha256"), ("sha1=", "sha1"), ("md5=", "md5")):
-            if signature.startswith(prefix):
-                algo = a
-                sig_value = signature[len(prefix) :]
-                break
+        sig_value = signature.strip()
+        if sig_value.lower().startswith("sha256="):
+            sig_value = sig_value[len("sha256=") :]
+        elif "=" in sig_value:
+            # 显式声明了其它算法 (sha1=/md5=...) ⇒ 不接受的降级尝试
+            return False
+        if len(sig_value) != 64:
+            return False
         try:
             computed = hmac.new(
-                secret.encode(), raw_body.encode(), getattr(hashlib, algo)
+                secret.encode(), raw_body.encode(), hashlib.sha256
             ).hexdigest()
-            return hmac.compare_digest(computed, sig_value)
+            return hmac.compare_digest(computed, sig_value.lower())
         except Exception:  # noqa: BLE001
             return False
 

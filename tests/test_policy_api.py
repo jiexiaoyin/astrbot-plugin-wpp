@@ -27,7 +27,7 @@ def fake_account():
         require_at_mention=False,
         private_allow_all=False,
         lazy_media=True,
-        save_policy=lambda: None,
+        save_policy_async=AsyncMock(return_value=True),
         stats={
             "status": {
                 "online": True,
@@ -105,6 +105,18 @@ class TestPolicyApi(unittest.TestCase):
         self.assertEqual(acct.allow_users, {"u2", "123@chatroom"})
         self.assertEqual(acct.group_reply, "all")
         self.assertEqual(acct.proactive_groups, {"123@chatroom", "456@chatroom"})
+
+    def test_update_reports_save_failure(self):
+        """落盘失败必须返回 error, 不能假装保存成功 (重启后会丢策略)。"""
+        acct = fake_account()
+        acct.save_policy_async = AsyncMock(return_value=False)
+        plugin = self._plugin(acct)
+        payload = {"account_id": "wpp", "group_reply": "all"}
+        with patch.object(main_mod.request, "json", AsyncMock(return_value=payload)):
+            resp = main_mod.asyncio.run(plugin.web_policy_update())
+        body = json.loads(resp.body)
+        self.assertEqual(body["status"], "error")
+        self.assertIn("写入配置文件失败", body["message"])
 
     def test_update_accepts_newline_and_semicolon_lists(self):
         acct = fake_account()

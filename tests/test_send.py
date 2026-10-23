@@ -11,6 +11,7 @@ sys.path.insert(0, str(PLUGIN_DIR.parent))
 
 sender = importlib.import_module("astrbot_plugin_wpp.wpp_send")
 event_mod = importlib.import_module("astrbot_plugin_wpp.wpp_event")
+client_mod = importlib.import_module("astrbot_plugin_wpp.wpp_client")
 
 from astrbot.api.message_components import At, AtAll, Location, Plain, Reply, Share
 
@@ -265,6 +266,44 @@ class TestSendFailurePropagation(unittest.IsolatedAsyncioTestCase):
                 return {"Code": 0}
 
         await self._event(Api()).send(MessageChain([Plain("你好")]))
+
+    async def test_send_leg_reaches_vendor_send_txt(self):
+        """发送主路径: WppMessageEvent.send → send_chain → 真实 WppClient。"""
+        from unittest.mock import patch
+
+        from astrbot.api.event import MessageChain
+
+        client = client_mod.WppClient("http://127.0.0.1:1", "token")
+        calls = []
+
+        async def fake_post(endpoint, body, **kwargs):
+            calls.append((endpoint, body))
+            return {"Code": 0}
+
+        with patch.object(client, "_post", side_effect=fake_post):
+            await self._event(client).send(MessageChain([Plain("你好")]))
+        self.assertEqual(calls[0][0], "/Msg/SendTxt")
+        self.assertEqual(calls[0][1]["ToWxid"], "wxid_f")
+        self.assertEqual(calls[0][1]["Content"], "你好")
+
+
+class TestSilkEncoding(unittest.TestCase):
+    """SILK 语音编码: 分段时长/大小必须落在微信限制内。"""
+
+    def test_two_seconds_encode_into_one_segment(self):
+        try:
+            import pysilk
+        except ImportError:  # pragma: no cover - 容器里已安装
+            self.skipTest("pysilk 未安装")
+
+        # 2 秒 24kHz 单声道 s16le 静音 PCM
+        pcm = b"\x00\x00" * 24000 * 2
+        segments = sender._silk_segments_sync(pysilk, pcm)
+        self.assertTrue(segments)
+        self.assertTrue(all(len(data) <= sender.VOICE_MAX_BYTES for data, _ in segments))
+        total_ms = sum(ms for _, ms in segments)
+        self.assertGreaterEqual(total_ms, 1900)
+        self.assertLessEqual(total_ms, 2100)
 
 
 if __name__ == "__main__":

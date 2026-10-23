@@ -70,7 +70,7 @@ class FilehelperCommands:
 
     async def _save(self, reply) -> bool:
         """落盘并如实告知失败；内存里的修改不会回滚。"""
-        if self.account.save_policy():
+        if await self.account.save_policy_async():
             return True
         await reply(
             "⚠️ 修改已应用到当前运行，但写入配置文件失败（重启后会丢失），"
@@ -377,7 +377,7 @@ class FilehelperCommands:
         acct = self.account
         action = (args[0] if args else "list").strip().lower()
         if action in ("on", "1", "true"):
-            if acct.set_join_welcome_enabled(True):
+            if await acct.set_join_welcome_enabled_async(True):
                 cfg = acct.join_welcome_cfg()
                 await reply(
                     f"✅ 进群欢迎已开启 (mode={cfg['mode']}，"
@@ -387,7 +387,7 @@ class FilehelperCommands:
                 await reply("❌ 进群欢迎开启失败：运行时配置写入失败，详见日志。")
             return
         if action in ("off", "0", "false"):
-            if acct.set_join_welcome_enabled(False):
+            if await acct.set_join_welcome_enabled_async(False):
                 await reply("✅ 进群欢迎已关闭")
             else:
                 await reply("❌ 进群欢迎关闭失败：运行时配置写入失败，详见日志。")
@@ -454,6 +454,7 @@ class FilehelperCommands:
             "",
             "【当前策略】",
             f"私聊白名单：{len(private)} 人",
+            f"私聊模式：{'全部放行（黑名单除外）' if acct.private_allow_all else '仅白名单'}",
             f"私聊黑名单：{len(acct.block_users)} 人",
             f"群白名单：{len(groups)} 个（自动主动候选）",
             f"群黑名单：{len(acct.blacklist_groups)} 个",

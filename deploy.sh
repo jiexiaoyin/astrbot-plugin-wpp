@@ -7,11 +7,19 @@ CONTAINER="astrbot"
 PLUGIN_DIR="/AstrBot/data/plugins/astrbot_plugin_wpp"
 
 echo "==> [1/4] 拷贝插件到容器 $CONTAINER"
-docker exec "$CONTAINER" sh -c "mkdir -p $PLUGIN_DIR"
-# pages / i18n 是纯源码目录; 先清理以移除已改名/删除的页面, 避免旧 Pages
-# 残留后仍被 Dashboard 自动发现。运行时数据不在此列。
-docker exec "$CONTAINER" sh -c "rm -rf '$PLUGIN_DIR/pages' '$PLUGIN_DIR/.astrbot-plugin'"
-docker cp "$PLUGIN_SRC"/. "$CONTAINER":"$PLUGIN_DIR"/
+# 先在宿主机打包「运行所需文件」: 测试/缓存/git 元数据不进容器
+# (旧版直接 docker cp 整个 dev 目录, tests/.github/__pycache__ 全被带进去)。
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+tar -C "$PLUGIN_SRC" \
+    --exclude=.git --exclude=.github --exclude=tests \
+    --exclude=__pycache__ --exclude='*.pyc' \
+    --exclude=.pytest_cache --exclude=.ruff_cache --exclude=data \
+    -cf - . | tar -C "$STAGE" -xf -
+# 整目录替换: 源里已删除/改名的模块不会作为旧文件残留在容器里。
+# 运行时数据在 /AstrBot/data/plugin_data/astrbot_plugin_wpp, 不在本目录。
+docker exec "$CONTAINER" sh -c "rm -rf '$PLUGIN_DIR' && mkdir -p '$PLUGIN_DIR'"
+docker cp "$STAGE"/. "$CONTAINER":"$PLUGIN_DIR"/
 
 echo "==> [2/4] 检查依赖 aiohttp + websockets"
 docker exec "$CONTAINER" sh -c 'python3 -c "import aiohttp, websockets" >/dev/null 2>&1 || pip install aiohttp websockets -i https://mirrors.aliyun.com/pypi/simple/'

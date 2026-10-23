@@ -49,7 +49,8 @@ docker restart astrbot
 | `wpp_base_url` | `http://<vendor-ip>:28062` | WPP API 地址（跨容器用宿主机 IP）|
 | `wpp_auth_token` | 你的 authcode | X-Access-Token = authcode；一个实例一个账号 |
 | `wpp_ws_url` | `wss://<vendor-domain>/ws/sync` | **WS 主通道地址**（连接即收消息）。容器内可用宿主机 IP 或公网域名 |
-| `wpp_allow_users` | `wxid_abc,123@chatroom` | 私聊 wxid / 群 ID（`@chatroom`）；空=私聊全部放行、群按 `group_reply` |
+| `wpp_allow_users` | `wxid_abc,123@chatroom` | 私聊 wxid / 群 ID（`@chatroom`）；**私聊默认拒绝**（需在名单内，或显式开启 `wpp_private_allow_all`）|
+| `wpp_private_allow_all` | `false` | 私聊全部放行（黑名单除外）。默认 `false` = fail-closed，空白名单不会回复任何私聊 |
 | `wpp_group_reply` | `atbot` | 群消息准入：`atbot` / `none` / `all`（`all` 只观察，不强制回复）|
 | `wpp_proactive_groups` | 留空 | 显式主动候选群；群白名单已自动共用，通常无需填写 |
 | `wpp_sync_heartflow_whitelist` | `true` | 群白名单同步到 Heartflow（未安装自动跳过）|
@@ -104,6 +105,30 @@ WPP 群白名单会自动同步到 Heartflow 的 `chat_whitelist`，有两种来
 - authcode 绑定哪个微信，就在 vendor 面板（API 端口）用哪个微信登录（iPad/Mac 扫码）
 - 账号登录后若 `online=false`，插件会自动调 AutoHeartBeat 拉上线
 - **WS 主通道**：连接建立即拉全量离线 + 实时消息；自动重连（指数退避 1s→30s），无需额外保活
+
+## v0.14.0 私聊默认拒绝（fail-closed）+ webhook 强制 HMAC
+
+v0.14.0 起 `wpp_private_allow_all` 默认 `false`：`wpp_allow_users` 里没有
+任何私聊 wxid 时，私聊消息一律不进入 AstrBot（群白名单不受影响）。这是行为
+变更，升级后若发现「私聊突然不回复」，按需放开：
+
+1. Dashboard → 平台适配器 → 编辑实例：
+   - 只放行指定好友：把 wxid 填进 `wpp_allow_users`
+   - 放行全部私聊：打开「私聊全部放行」（`wpp_private_allow_all=true`），
+     要排除的人填 `wpp_block_users`
+2. 或由 AstrBot 管理员用 `/wpp_policy <账号> private_allow_all set true`。
+3. 文件传输助手命令：`/user add wxid_xxx` 单独加人。
+
+webhook 兜底通道同时改为 fail-closed：
+
+- `wpp_webhook_enabled=true` 但 `webhook_secret` 为空 ⇒ **拒绝启动** webhook
+  （日志 error），入站仍以 WS 为准。
+- 回调签名只接受 HMAC-SHA256（`X-Signature` / `X-Hub-Signature-256` /
+  `X-WPP-Signature`，可带 `sha256=` 前缀）；md5/sha1 降级签名一律 403。
+- 签名失败/path 不匹配的日志不再输出含 URL token 的路径。
+
+升级步骤：正常部署 → 重启 → 在文件传输助手发 `/help`，确认「私聊模式」与
+预期一致。无需迁移任何数据文件。
 
 ## v0.13.0 平台技术名恢复中文
 

@@ -54,6 +54,7 @@ from .wpp_messages import (
     src_chatroom,
     src_content,
     src_is_filehelper,
+    src_is_incoming,
     src_msg_key,
     src_recipient,
     src_sender,
@@ -68,6 +69,8 @@ DEDUP_MAX = 500
 FILTER_REPORT_INTERVAL = 60.0  # 过滤日志汇总间隔 (秒)
 # 关闭时清空队列的总时限：每条 3s × 1000 条会让进程退出挂近 50 分钟。
 DRAIN_DEADLINE_S = 10.0
+# WS 连接稳定存活超过该时长才把重连退避重置回 1s。
+WS_STABLE_RESET_SECONDS = 30.0
 
 # 日志里必须隐去的 query 参数 (值只显示为 <set>)
 _SENSITIVE_QUERY_KEYS = {"authcode", "token", "key", "secret", "password"}
@@ -168,6 +171,8 @@ class WppAccount:
 
         # 群成员基线 + 欢迎语后台任务 (抓取/发送绝不阻塞消息 worker)
         self._members_state: dict = self.store.load_members()
+        #: 串行化基线「改内存 + 线程池落盘」, 防止两个群的 diff 交叉写坏快照。
+        self._members_lock = asyncio.Lock()
         self._welcome_tasks: set[asyncio.Task] = set()
         self._welcome_locks: dict[str, asyncio.Lock] = {}
         #: chatroom_id -> monotonic 时间; 系统通知可能对一次变动连推多条。
@@ -196,6 +201,11 @@ class WppAccount:
         # 过滤日志汇总
         self._filtered_since_report = 0
         self._ignored_since_report: dict[str, int] = {}
+        # 累计值 (不随汇报清零): 面板/排障需要「启动以来总共丢了多少」
+        self._total_filtered = 0
+        self._total_ignored = 0
+        self._total_dropped = 0
+        self._total_observed = 0
         self._last_filter_report = time.monotonic()
         self._drop_since_report = 0
         self._observe_since_report = 0
@@ -238,7 +248,7 @@ class WppAccount:
         if welcome_tasks:
             await asyncio.gather(*welcome_tasks, return_exceptions=True)
         self._welcome_tasks.clear()
-        self._flush_dedup()
+        await self._flush_dedup()
         try:
             await self._api.close()
         except Exception:  # noqa: BLE001
@@ -251,6 +261,7 @@ class WppAccount:
 
         delay = 1.0
         while True:
+            connected_at = 0.0
             try:
                 url = _ws_url_with_authcode(self.ws_url, self.authcode)
                 logger.info(
@@ -265,7 +276,7 @@ class WppAccount:
                     max_size=100 * 1024 * 1024,
                     logger=_WS_LOGGER,
                 ) as ws:
-                    delay = 1.0  # 连接成功重置退避
+                    connected_at = time.monotonic()
                     logger.info(f"[WPP:{self.account_id} WS] connected")
                     async for raw in ws:
                         try:
@@ -287,6 +298,13 @@ class WppAccount:
                 break
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[WPP:{self.account_id} WS] 连接断开/异常, {delay}s 后重连: {e}")
+            # 只有连接稳定存活过才重置退避: 连上即断的抖动不能让间隔永远停在 1s,
+            # 否则 vendor 侧故障时会变成每秒一次的连接风暴。
+            if (
+                connected_at
+                and time.monotonic() - connected_at >= WS_STABLE_RESET_SECONDS
+            ):
+                delay = 1.0
             await asyncio.sleep(delay)
             delay = min(delay * 2, 30.0)  # 指数退避 1s→30s 封顶
 
@@ -307,9 +325,10 @@ class WppAccount:
             except asyncio.QueueFull:
                 pass
             self._drop_since_report += 1
+            self._total_dropped += 1
             logger.warning(
                 f"[WPP:{self.account_id}] 消息队列已满, 丢弃最旧消息 "
-                f"(累计 {self._drop_since_report})"
+                f"(累计 {self._total_dropped})"
             )
 
     async def _worker_loop(self) -> None:
@@ -366,6 +385,14 @@ class WppAccount:
             profile = await asyncio.wait_for(getter(chatroom_id), timeout=10)
         except Exception as e:  # noqa: BLE001 - 预取失败不阻塞消息
             logger.debug(f"[WPP:{self.account_id}] 群资料预取失败 {chatroom_id}: {e}")
+            # wait_for 可能在中途取消 get_group_profile，令它来不及写自己的失败
+            # 负缓存；不补的话 vendor 变慢时每条消息都会再等满 10s。
+            marker = getattr(self._api, "mark_group_profile_failure", None)
+            if callable(marker):
+                try:
+                    marker(chatroom_id)
+                except Exception:  # noqa: BLE001
+                    pass
             return None
         return profile if isinstance(profile, dict) else None
 
@@ -386,6 +413,12 @@ class WppAccount:
             nick = await asyncio.wait_for(resolver(from_wxid, ""), timeout=8)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[WPP:{self.account_id}] 私聊昵称解析失败 {from_wxid}: {e}")
+            marker = getattr(self._api, "mark_nickname_failure", None)
+            if callable(marker):
+                try:
+                    marker(from_wxid, "")
+                except Exception:  # noqa: BLE001
+                    pass
             return ""
         return str(nick or "").strip()
 
@@ -410,9 +443,17 @@ class WppAccount:
             logger.debug(f"[WPP:{self.account_id}] 重复消息已跳过: id={msg_key}")
             return
 
-        # filehelper 管理命令 (自身发出的消息 direction=outgoing, 需在方向过滤之前处理)
+        # filehelper 管理命令 (自身发出的消息 direction=outgoing, 需在方向过滤之前处理)。
+        # 管理命令只认「本机发往文件助手」的消息; vendor 明确标为入站的直接拒绝,
+        # 防止回调被伪造/重放时把任意外来消息当管理命令执行。
         if src_is_filehelper(src) and content.startswith("/"):
-            await self._handle_filehelper_command(content)
+            if safe_str(src.get("direction")) and src_is_incoming(src):
+                logger.warning(
+                    f"[WPP:{self.account_id}] 拒绝入站消息中的 filehelper 管理命令: "
+                    f"from={from_wxid or '-'}"
+                )
+            else:
+                await self._handle_filehelper_command(content)
             self._record_seen_msg(msg_key)
             return
 
@@ -426,6 +467,7 @@ class WppAccount:
         if reason:
             key = reason.split(":", 1)[0]
             self._ignored_since_report[key] = self._ignored_since_report.get(key, 0) + 1
+            self._total_ignored += 1
             logger.debug(
                 f"[WPP:{self.account_id}] 已忽略消息: reason={reason} from={from_wxid or '-'}"
             )
@@ -449,6 +491,7 @@ class WppAccount:
         )
         if not decision.allowed:
             self._filtered_since_report += 1
+            self._total_filtered += 1
             logger.debug(
                 f"[WPP:{self.account_id}] 被白名单/群策略过滤: "
                 f"from={from_wxid} group={chatroom_id or '-'} reason={decision.reason}"
@@ -489,6 +532,7 @@ class WppAccount:
         if observe_only:
             temp_files = await enrich_media(self._api, msg, include={"voice"})
             self._observe_since_report += 1
+            self._total_observed += 1
             logger.debug(
                 f"[WPP:{self.account_id}] 主动观察放行: from={from_wxid} "
                 f"group={chatroom_id} reason={decision.reason}"
@@ -519,13 +563,21 @@ class WppAccount:
             self._seen_msg_ids.discard(old)
         self._dedup_dirty = True
 
-    def _flush_dedup(self) -> None:
+    async def _flush_dedup(self) -> None:
+        """把去重环形缓冲落盘 (含 fsync), 放到线程池执行。
+
+        维护循环每 3 秒调一次; 同步 fsync 直接跑在事件循环上会周期性
+        卡住 WS 收包与发送节流。先清脏标记再写: 写入期间进来的新消息
+        会重新置脏, 下一轮补写。
+        """
         if not self._dedup_dirty:
             return
+        payload = self._seen_msg_ids_order[-DEDUP_MAX:]
+        self._dedup_dirty = False
         try:
-            self.store.save_dedup(self._seen_msg_ids_order[-DEDUP_MAX:])
-            self._dedup_dirty = False
+            await asyncio.to_thread(self.store.save_dedup, payload)
         except Exception as e:  # noqa: BLE001
+            self._dedup_dirty = True
             logger.warning(f"[WPP:{self.account_id}] 保存去重状态失败: {e}")
 
     # ------------------------------------------------------------------ 策略快照/持久化
@@ -579,11 +631,12 @@ class WppAccount:
         if isinstance(pg, list):
             self.proactive_groups = {str(g).strip() for g in pg if str(g).strip()}
 
-    def save_policy(self) -> bool:
-        """持久化白名单/群策略 (atomic write)；返回是否真正落盘。
+    def _save_policy_file(self) -> bool:
+        """同步落盘策略 (atomic write + fsync)；返回是否真正写成功。
 
         **读-改-写**：只覆盖本函数负责的键，保留 ``join_welcome`` 以及未知键 ——
         旧版整份重写会把用户在文件里手写的欢迎语配置抹掉。
+        异步调用方应走 :meth:`save_policy_async`, 别在事件循环里直接 fsync。
         """
         try:
             data = self.store.load_config()
@@ -606,7 +659,20 @@ class WppAccount:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[WPP:{self.account_id}] 写配置文件失败: {e}")
             return False
+        return True
+
+    def save_policy(self) -> bool:
+        """同步入口 (测试 / 非事件循环场景): 落盘并同步 Heartflow 白名单。"""
+        if not self._save_policy_file():
+            return False
         self._sync_heartflow_whitelist("policy")
+        return True
+
+    async def save_policy_async(self) -> bool:
+        """事件循环内使用的入口: 文件 IO 与 Heartflow 同步都放到线程池。"""
+        if not await asyncio.to_thread(self._save_policy_file):
+            return False
+        await asyncio.to_thread(self._sync_heartflow_whitelist, "policy")
         return True
 
     def _sync_heartflow_whitelist(self, reason: str) -> None:
@@ -668,9 +734,8 @@ class WppAccount:
             blacklisted_groups=self.blacklist_groups,
         )
 
-    def set_join_welcome_enabled(self, enabled: bool) -> bool:
-        """命令开关: 改 ``join_welcome.enabled`` 并落盘 (保留其余键)。"""
-        was_enabled = self.join_welcome_cfg()["enabled"]
+    def _save_join_welcome_enabled(self, enabled: bool) -> bool:
+        """同步写 ``join_welcome.enabled`` (保留其余键)。"""
         raw = dict(self._join_welcome_raw or {})
         raw["enabled"] = bool(enabled)
         try:
@@ -684,10 +749,28 @@ class WppAccount:
             logger.warning(f"[WPP:{self.account_id}] 保存进群欢迎开关失败: {e}")
             return False
         self._join_welcome_raw = raw
+        return True
+
+    def _after_join_welcome_toggle(self, enabled: bool, was_enabled: bool) -> None:
         logger.info(f"[WPP:{self.account_id}] 进群欢迎已{'开启' if enabled else '关闭'}")
         if enabled and not was_enabled:
             # 开启瞬间先把生效群当前成员记为基线, 老成员不会被当成新人欢迎。
             self._schedule_welcome_baselines("命令启用")
+
+    def set_join_welcome_enabled(self, enabled: bool) -> bool:
+        """同步入口 (测试 / 非事件循环场景)。"""
+        was_enabled = self.join_welcome_cfg()["enabled"]
+        if not self._save_join_welcome_enabled(enabled):
+            return False
+        self._after_join_welcome_toggle(enabled, was_enabled)
+        return True
+
+    async def set_join_welcome_enabled_async(self, enabled: bool) -> bool:
+        """事件循环内入口: 落盘放线程池, 基线调度回事件循环。"""
+        was_enabled = self.join_welcome_cfg()["enabled"]
+        if not await asyncio.to_thread(self._save_join_welcome_enabled, enabled):
+            return False
+        self._after_join_welcome_toggle(enabled, was_enabled)
         return True
 
     def _maybe_join_notice(self, src: dict) -> None:
@@ -786,7 +869,7 @@ class WppAccount:
             baseline = baseline_group.get("members") or {}
             if not baseline:
                 # 首次同步: 只建基线, 绝不把全群欢迎一遍。
-                if self._write_baseline(chatroom_id, group_name, current):
+                if await self._write_baseline(chatroom_id, group_name, current):
                     logger.info(
                         f"[WPP:{self.account_id}] 进群欢迎基线已建立 "
                         f"group={chatroom_id} members={len(current)}"
@@ -810,11 +893,11 @@ class WppAccount:
                         f"added={len(added)} removed={len(removed)} "
                         f"(静默时段/超过 maxBatch={cfg['maxBatch']}/群未生效)"
                     )
-                self._write_baseline(chatroom_id, group_name, current)
+                await self._write_baseline(chatroom_id, group_name, current)
                 return
 
             # 先落盘后发送: 至多一次 —— 宁可丢一条欢迎, 绝不重复刷屏。
-            if not self._write_baseline(chatroom_id, group_name, current):
+            if not await self._write_baseline(chatroom_id, group_name, current):
                 return
             text, ats = plan
             logger.info(
@@ -823,42 +906,55 @@ class WppAccount:
             )
             await self._send_join_welcome(chatroom_id, text, ats)
 
-    def _write_baseline(self, chatroom_id: str, group_name: str, members: dict) -> bool:
-        """把当前成员表写成新基线; 落盘失败则回滚内存并返回 False。"""
-        chatrooms = self._members_state.setdefault("chatrooms", {})
-        old_group = chatrooms.get(chatroom_id) or {}
-        old_members = old_group.get("members") or {}
-        now_ts = int(time.time())
-        merged: dict[str, dict] = {}
-        for wxid, nick in members.items():
-            prev = old_members.get(wxid)
-            first_seen = 0
-            if isinstance(prev, dict):
-                try:
-                    first_seen = int(prev.get("first_seen") or 0)
-                except (TypeError, ValueError):
-                    first_seen = 0
-            merged[wxid] = {"nick": str(nick or ""), "first_seen": first_seen or now_ts}
-        previous = chatrooms.get(chatroom_id)
-        previous_updated_at = self._members_state.get("updated_at")
-        chatrooms[chatroom_id] = {
-            "name": str(group_name or old_group.get("name") or ""),
-            "synced_at": now_ts,
-            "members": merged,
-        }
-        self._members_state["version"] = 1
-        self._members_state["updated_at"] = now_ts
-        try:
-            self.store.save_members(self._members_state)
-            return True
-        except Exception as e:  # noqa: BLE001 - 落盘失败 ⇒ 本次不发欢迎
-            logger.warning(f"[WPP:{self.account_id}] 保存群成员基线失败 group={chatroom_id}: {e}")
-            if previous is None:
-                chatrooms.pop(chatroom_id, None)
-            else:
-                chatrooms[chatroom_id] = previous
-            self._members_state["updated_at"] = previous_updated_at
-            return False
+    async def _write_baseline(
+        self, chatroom_id: str, group_name: str, members: dict
+    ) -> bool:
+        """把当前成员表写成新基线; 落盘失败则回滚内存并返回 False。
+
+        落盘含 fsync, 放线程池执行; 用账号级锁串行化「改内存 + 写文件」,
+        避免多个群的 diff 同时把半更新的快照写进 members.json。
+        """
+        async with self._members_lock:
+            chatrooms = self._members_state.setdefault("chatrooms", {})
+            old_group = chatrooms.get(chatroom_id) or {}
+            old_members = old_group.get("members") or {}
+            now_ts = int(time.time())
+            merged: dict[str, dict] = {}
+            for wxid, nick in members.items():
+                prev = old_members.get(wxid)
+                first_seen = 0
+                if isinstance(prev, dict):
+                    try:
+                        first_seen = int(prev.get("first_seen") or 0)
+                    except (TypeError, ValueError):
+                        first_seen = 0
+                merged[wxid] = {
+                    "nick": str(nick or ""),
+                    "first_seen": first_seen or now_ts,
+                }
+            previous = chatrooms.get(chatroom_id)
+            previous_updated_at = self._members_state.get("updated_at")
+            chatrooms[chatroom_id] = {
+                "name": str(group_name or old_group.get("name") or ""),
+                "synced_at": now_ts,
+                "members": merged,
+            }
+            self._members_state["version"] = 1
+            self._members_state["updated_at"] = now_ts
+            try:
+                await asyncio.to_thread(self.store.save_members, self._members_state)
+                return True
+            except Exception as e:  # noqa: BLE001 - 落盘失败 ⇒ 本次不发欢迎
+                logger.warning(
+                    f"[WPP:{self.account_id}] 保存群成员基线失败 "
+                    f"group={chatroom_id}: {e}"
+                )
+                if previous is None:
+                    chatrooms.pop(chatroom_id, None)
+                else:
+                    chatrooms[chatroom_id] = previous
+                self._members_state["updated_at"] = previous_updated_at
+                return False
 
     async def _send_join_welcome(self, chatroom_id: str, text: str, ats: list[str]) -> None:
         try:
@@ -919,7 +1015,7 @@ class WppAccount:
                         # 白名单/模式变化可能新增生效群: 只给还没有基线的群补建。
                         self._schedule_welcome_baselines("配置变更", only_missing=True)
 
-                self._flush_dedup()
+                await self._flush_dedup()
 
                 now = time.monotonic()
                 # Heartflow 白名单周期性自愈: 配置被外部改写/Heartflow 重载后
@@ -983,6 +1079,13 @@ class WppAccount:
             "queue_size": self._queue.qsize() if self._queue else 0,
             "dedup_size": len(self._seen_msg_ids),
             "send": dict(getattr(self._api, "send_stats", {}) or {}),
+            # 启动以来的累计计数 (过滤/忽略/队列溢出/主动观察), 排查丢消息用
+            "inbound": {
+                "filtered": self._total_filtered,
+                "ignored": self._total_ignored,
+                "dropped": self._total_dropped,
+                "observed": self._total_observed,
+            },
             "lazy_media": self.lazy_media,
         }
 

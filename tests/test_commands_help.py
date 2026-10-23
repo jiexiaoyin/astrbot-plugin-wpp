@@ -26,6 +26,7 @@ def make_account(**overrides):
         proactive_groups={"g2@chatroom", "g3@chatroom"},
         group_reply="atbot",
         require_at_mention=False,
+        private_allow_all=False,
         join_welcome=welcome,
     )
     data.update(overrides)
@@ -38,11 +39,11 @@ def make_account(**overrides):
         "baselines": dict(welcome_baselines),
     }
 
-    def set_enabled(enabled):
+    async def set_enabled(enabled):
         acct.join_welcome = dict(acct.join_welcome or {}, enabled=bool(enabled))
         return True
 
-    acct.set_join_welcome_enabled = set_enabled
+    acct.set_join_welcome_enabled_async = set_enabled
     return acct
 
 
