@@ -22,6 +22,8 @@ from .wpp_messages import SYSTEM_SENDERS
 
 # P2-3: 文件下载大小上限 (200MB, 与视频一致), 防超大文件撑爆内存
 MAX_FILE_BYTES = 200 * 1024 * 1024
+# 出站图片大小上限 (20MB): 图片要以 base64 塞进 JSON, 过大会拖垮 vendor 和内存
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 # 群成员昵称缓存: 引用回复时用来把 At.name 的 wxid 兜底替换成真实昵称。
 # 群成员列表调用较重, 同群同成员 30 分钟内只查一次 (与 wpp-openclaw 一致)。
@@ -35,6 +37,13 @@ GROUP_CACHE_TTL_SECONDS = 1800.0
 GROUP_FAILURE_TTL_SECONDS = 60.0
 # 群资料预取不能拖死消息 worker
 GROUP_INFO_TIMEOUT_SECONDS = 8.0
+
+# 缓存/锁上限: 长期运行时群数和会话数会持续增长, 必须有界。
+# 昵称缓存每群每人一条, 给足余量; 群资料/锁只需覆盖活跃会话。
+MAX_NICKNAME_CACHE_ENTRIES = 5000
+MAX_GROUP_CACHE_ENTRIES = 500
+MAX_SESSION_LOCKS = 512
+MAX_PACE_ENTRIES = 2000
 
 # 出站消息节流 (同一会话两次 vendor 发送的最小间隔)
 DEFAULT_SEND_INTERVAL_SECONDS = 0.3
@@ -137,6 +146,16 @@ class WppClient:
             h["X-Access-Token"] = self.auth_token
         return h
 
+    @staticmethod
+    def _prune_locks(locks: dict[str, asyncio.Lock]) -> None:
+        """锁表有界: 只回收未持有的锁, 绝不丢弃正在使用的锁。"""
+        if len(locks) <= MAX_SESSION_LOCKS:
+            return
+        for key in [k for k, lock in locks.items() if not lock.locked()]:
+            if len(locks) <= MAX_SESSION_LOCKS:
+                break
+            locks.pop(key, None)
+
     def send_lock(self, to_wxid: str) -> asyncio.Lock:
         """整条消息链的会话级锁: 同一会话的回复按整链串行, 分片不交错。"""
         key = str(to_wxid or "")
@@ -144,6 +163,7 @@ class WppClient:
         if lock is None:
             lock = asyncio.Lock()
             self._chain_locks[key] = lock
+            self._prune_locks(self._chain_locks)
         return lock
 
     async def _pace_send(self, to_wxid: str) -> None:
@@ -159,6 +179,10 @@ class WppClient:
                 await asyncio.sleep(delay)
                 now = time.monotonic()
         self._last_send_at[key] = now
+        if len(self._last_send_at) > MAX_PACE_ENTRIES:
+            # 只保留最近使用的一半, 老的节流时间戳已经无意义
+            keep = sorted(self._last_send_at.items(), key=lambda kv: kv[1])[-MAX_PACE_ENTRIES // 2 :]
+            self._last_send_at = dict(keep)
 
     def record_send_result(self, ok: bool, error: str = "") -> None:
         """记录 vendor 发送结果; 连续失败 3 次告警一次。"""
@@ -221,6 +245,7 @@ class WppClient:
             if lock is None:
                 lock = asyncio.Lock()
                 self._send_locks[key] = lock
+                self._prune_locks(self._send_locks)
             async with lock:
                 await self._pace_send(key)
                 try:
@@ -274,6 +299,21 @@ class WppClient:
                             f"{endpoint} -> {text[:300]}",
                         )
                     return data
+            except WppApiError as e:
+                # 5xx / 非 JSON 响应通常是 vendor 瞬时故障: 查询类接口可以重试。
+                # 业务 Code!=0 是确定性拒绝 (鉴权/参数), 重试只会放大无效请求。
+                last_err = e
+                code = str(e.code)
+                retryable = code == "bad_json" or (
+                    code.startswith("http_") and code[5:].isdigit() and int(code[5:]) >= 500
+                )
+                if retryable and attempt <= max_retries:
+                    logger.debug(
+                        f"[WPP] {endpoint} 第 {attempt} 次失败 ({code}), 退避重试"
+                    )
+                    await asyncio.sleep(0.5 * (2 ** (attempt - 1)))  # 0.5s, 1s
+                    continue
+                raise
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_err = e
                 if attempt <= max_retries:
@@ -370,7 +410,23 @@ class WppClient:
         if not nick:
             nick = await self._contact_nickname(wxid)
         self._nickname_cache[key] = (nick, time.monotonic())
+        self._prune_nickname_cache()
         return nick
+
+    def _prune_nickname_cache(self) -> None:
+        if len(self._nickname_cache) <= MAX_NICKNAME_CACHE_ENTRIES:
+            return
+        now = time.monotonic()
+        self._nickname_cache = {
+            k: v
+            for k, v in self._nickname_cache.items()
+            if now - v[1] < NICKNAME_CACHE_TTL_SECONDS
+        }
+        if len(self._nickname_cache) > MAX_NICKNAME_CACHE_ENTRIES:
+            keep = sorted(self._nickname_cache.items(), key=lambda kv: kv[1][1])[
+                -MAX_NICKNAME_CACHE_ENTRIES:
+            ]
+            self._nickname_cache = dict(keep)
 
     @staticmethod
     def _parse_group_members(resp: dict) -> dict[str, str]:
@@ -397,6 +453,21 @@ class WppClient:
             if uid:
                 out[uid] = WppClient._member_nickname(member)
         return out
+
+    def _prune_group_cache(self) -> None:
+        if len(self._group_cache) <= MAX_GROUP_CACHE_ENTRIES:
+            return
+        now = time.monotonic()
+        self._group_cache = {
+            k: v
+            for k, v in self._group_cache.items()
+            if now - v[1] < GROUP_CACHE_TTL_SECONDS
+        }
+        if len(self._group_cache) > MAX_GROUP_CACHE_ENTRIES:
+            keep = sorted(self._group_cache.items(), key=lambda kv: kv[1][1])[
+                -MAX_GROUP_CACHE_ENTRIES:
+            ]
+            self._group_cache = dict(keep)
 
     def _cached_group_profile(self, chatroom_id: str) -> dict | None:
         cached = self._group_cache.get(str(chatroom_id or ""))
@@ -474,6 +545,7 @@ class WppClient:
                 for uid, nick in members.items():
                     if nick:
                         self._nickname_cache[(chatroom_id, uid)] = (nick, now)
+                self._prune_nickname_cache()
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[WPP] 群成员查询失败 {chatroom_id}: {e}")
 
@@ -481,6 +553,7 @@ class WppClient:
         # 避免成员列表缺失时整整半小时都拿不到昵称。
         ok = info_ok and members_ok
         self._group_cache[chatroom_id] = (profile, time.monotonic(), ok)
+        self._prune_group_cache()
         if ok:
             logger.debug(
                 f"[WPP] 群资料已预取: {chatroom_id} name={profile['name']!r} "
@@ -992,15 +1065,26 @@ class WppClient:
             return False
 
     # ------------------------------------------------------------------ 工具
+    @staticmethod
+    def _ensure_image_size(size: int, image_ref: str) -> None:
+        if size > MAX_IMAGE_BYTES:
+            raise WppApiError(
+                "image_too_large",
+                f"图片过大 ({size} > {MAX_IMAGE_BYTES} bytes): {image_ref[:120]}",
+            )
+
     async def _resolve_image_to_base64(self, image_ref: str) -> str:
         """把 URL/路径/file:// URI/base64 统一成裸 base64 (无前缀)。"""
         if not image_ref:
             raise WppApiError("bad_image", "空的图片引用")
         if image_ref.startswith("base64://"):
-            return image_ref[len("base64://") :]
+            b64 = image_ref[len("base64://") :]
+            self._ensure_image_size(len(b64) * 3 // 4, image_ref)
+            return b64
         if image_ref.startswith("data:image"):
             _head, _, b64 = image_ref.partition(";base64,")
             if b64:
+                self._ensure_image_size(len(b64) * 3 // 4, image_ref)
                 return b64
         if image_ref.startswith("file://"):
             # file:///tmp/a.jpg / file://tmp/a.jpg → 本地路径
@@ -1013,18 +1097,34 @@ class WppClient:
             if not self._is_allowed_image_url(image_ref):
                 raise WppApiError("ssrf_blocked", f"图片 URL 不在白名单, 已阻止下载: {image_ref}")
             session = await self._session_acquire()
+            buf = bytearray()
             async with session.get(image_ref, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                 if resp.status != 200:
                     raise WppApiError("download", f"图片下载失败 HTTP {resp.status}: {image_ref}")
-                data = await resp.read()
-            return base64.b64encode(data).decode()
+                # 流式读取 + 上限检查: 不信任远端声明的 Content-Length,
+                # 避免恶意/异常响应把内存撑爆。
+                content_type = str(resp.headers.get("Content-Type") or "")
+                async for chunk in resp.content.iter_chunked(64 * 1024):
+                    buf.extend(chunk)
+                    self._ensure_image_size(len(buf), image_ref)
+            if content_type and not content_type.lower().startswith("image/"):
+                logger.debug(f"[WPP] 图片 Content-Type 非 image/*: {content_type}")
+            data = bytes(buf)
+            return (await asyncio.to_thread(base64.b64encode, data)).decode()
         # 本地路径
         from pathlib import Path
 
         p = Path(image_ref)
-        if p.exists():
-            return base64.b64encode(p.read_bytes()).decode()
-        raise WppApiError("bad_image", f"无法解析图片引用: {image_ref}")
+        if not p.exists():
+            raise WppApiError("bad_image", f"无法解析图片引用: {image_ref}")
+        try:
+            size = p.stat().st_size
+        except OSError as e:
+            raise WppApiError("bad_image", f"无法读取图片: {image_ref}: {e}") from e
+        self._ensure_image_size(size, image_ref)
+        # 读文件 + base64 都是同步阻塞操作, 放线程池避免卡住事件循环
+        data = await asyncio.to_thread(p.read_bytes)
+        return (await asyncio.to_thread(base64.b64encode, data)).decode()
 
     @staticmethod
     def _is_allowed_image_url(url: str) -> bool:

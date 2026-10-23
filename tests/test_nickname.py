@@ -10,7 +10,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-client_mod = importlib.import_module("astrbot-plugin-wpp.wpp_client")
+client_mod = importlib.import_module("astrbot_plugin_wpp.wpp_client")
 
 
 class TestResolveNickname(unittest.IsolatedAsyncioTestCase):

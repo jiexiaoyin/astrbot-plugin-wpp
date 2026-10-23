@@ -8,7 +8,7 @@
   5. on_waiting_llm_request 钩子懒加载一次, 并登记临时文件
 
 在 AstrBot 容器内运行:
-  docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/tests -v
+  docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot_plugin_wpp/tests -v
 """
 
 import importlib
@@ -24,10 +24,10 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-policy = importlib.import_module("astrbot-plugin-wpp.wpp_policy")
-media = importlib.import_module("astrbot-plugin-wpp.wpp_media")
-adapter = importlib.import_module("astrbot-plugin-wpp.wpp_adapter")
-plugin_main = importlib.import_module("astrbot-plugin-wpp.main")
+policy = importlib.import_module("astrbot_plugin_wpp.wpp_policy")
+media = importlib.import_module("astrbot_plugin_wpp.wpp_media")
+adapter = importlib.import_module("astrbot_plugin_wpp.wpp_adapter")
+plugin_main = importlib.import_module("astrbot_plugin_wpp.main")
 
 
 def snap(**kwargs):
@@ -115,7 +115,7 @@ class TestProactivePolicy(unittest.TestCase):
         self.assertEqual(d.reason, "group_all")
 
     def test_private_unaffected(self):
-        p = snap(proactive_groups={"g1@chatroom"})
+        p = snap(proactive_groups={"g1@chatroom"}, private_allow_all=True)
         d = policy.classify(p, "wxid_u", False, "", "你好")
         self.assertTrue(d.allowed)
 

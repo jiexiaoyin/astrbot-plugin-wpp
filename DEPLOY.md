@@ -6,7 +6,7 @@
 |---|---|
 | AstrBot | Docker 容器，Dashboard http://<host>:6185 |
 | WPP vendor | WeChatPadPro 容器（host 网络），API 端口自定义（如 28062/18062）|
-| 插件位置 | AstrBot 容器 `/AstrBot/data/plugins/astrbot-plugin-wpp/` |
+| 插件位置 | AstrBot 容器 `/AstrBot/data/plugins/astrbot_plugin_wpp/` |
 | 在线检查 | `GET /api/User/GetOnlineInfo?authcode=<x>` → `Data.online==True` 才算在线 |
 
 ## 🆕 新环境接入 Checklist（换 vendor/账号时）
@@ -30,7 +30,7 @@
 
 ```bash
 # 1. 拷贝插件到 AstrBot 容器
-docker cp astrbot-plugin-wpp astrbot:/AstrBot/data/plugins/
+docker cp astrbot_plugin_wpp astrbot:/AstrBot/data/plugins/
 
 # 2. 容器内装依赖 (aiohttp + websockets — WS 主通道必需)
 docker exec astrbot sh -c 'python3 -c "import aiohttp, websockets" || pip install aiohttp websockets'
@@ -126,7 +126,7 @@ mkdir -p "$BK"
 cp "$DATA/cmd_config.json" "$BK/"
 cp "$DATA/data_v4.db"* "$BK/"
 cp "$DATA/config/astrbot_plugin_Heartflow_config.json" "$BK/"
-cp -a "$DATA/plugin_data/astrbot-plugin-wpp" "$BK/plugin-data"
+cp -a "$DATA/plugin_data/astrbot_plugin_wpp" "$BK/plugin-data"
 ```
 
 2. 把 `cmd_config.json` 中该平台对象的 `type`/`id` 从 `wpp` 改为
@@ -191,9 +191,9 @@ mkdir -p "$BK"
 cp "$DATA/cmd_config.json" "$BK/"
 cp "$DATA/data_v4.db"* "$BK/"
 cp "$DATA/config/astrbot_plugin_Heartflow_config.json" "$BK/"
-cp -a "$DATA/plugin_data/astrbot-plugin-wpp" "$BK/plugin-data"
-cp -a "$DATA/plugins/astrbot-plugin-wpp/accounts" "$BK/plugin-dir-accounts" 2>/dev/null || true
-cp -a "$DATA/plugins/astrbot-plugin-wpp/data" "$BK/plugin-dir-data" 2>/dev/null || true
+cp -a "$DATA/plugin_data/astrbot_plugin_wpp" "$BK/plugin-data"
+cp -a "$DATA/plugins/astrbot_plugin_wpp/accounts" "$BK/plugin-dir-accounts" 2>/dev/null || true
+cp -a "$DATA/plugins/astrbot_plugin_wpp/data" "$BK/plugin-dir-data" 2>/dev/null || true
 ```
 
 2. 把 `cmd_config.json` 中该平台对象的 `type` 从 `个人微信（Pad协议）` 改为
@@ -224,7 +224,7 @@ UPDATE conversations SET content=replace(content, '个人微信（Pad协议）:G
    （webhook 已退役，通常可忽略）。
 
 ```bash
-PD="$DATA/plugin_data/astrbot-plugin-wpp"
+PD="$DATA/plugin_data/astrbot_plugin_wpp"
 [ -d "$PD/accounts/Pad" ] && mv "$PD/accounts/Pad" "$PD/accounts/wpp"
 [ -f "$PD/webhooks/Pad.token" ] && mv "$PD/webhooks/Pad.token" "$PD/webhooks/wpp.token"
 ```
@@ -232,7 +232,7 @@ PD="$DATA/plugin_data/astrbot-plugin-wpp"
 6. 清理插件源码目录残留（v0.12.0 起不再读取；已在上一步备份）：
 
 ```bash
-rm -rf "$DATA/plugins/astrbot-plugin-wpp/accounts" "$DATA/plugins/astrbot-plugin-wpp/data"
+rm -rf "$DATA/plugins/astrbot_plugin_wpp/accounts" "$DATA/plugins/astrbot_plugin_wpp/data"
 ```
 
 7. 部署 v0.12.0 代码并启动：
@@ -257,23 +257,23 @@ Loading IM platform adapter wpp (个人微信（Pad协议）) ...
 ## 开发迭代流程
 
 ```bash
-# 1. 编辑源码 (在 /root/dev/astrbot-plugin-wpp/)
+# 1. 编辑源码 (在 /root/dev/astrbot_plugin_wpp/)
 # 2. 静态检查 + 全量测试
 ruff check .
 docker exec -w /AstrBot/data/plugins astrbot \
-  python -m pytest -q astrbot-plugin-wpp/tests
+  python -m pytest -q astrbot_plugin_wpp/tests
 # 3. 真实主路径冒烟 (必做, 纯单测全绿不代表主路径能跑)
 docker exec -w /AstrBot/data/plugins astrbot \
-  python -m pytest -q astrbot-plugin-wpp/tests/test_mainpath_smoke.py
+  python -m pytest -q astrbot_plugin_wpp/tests/test_mainpath_smoke.py
 # 4. 部署到容器 (保留运行时 accounts/data)
 rsync -a --delete \
   --exclude='.git' --exclude='__pycache__' --exclude='.pytest_cache' \
   --exclude='.ruff_cache' --exclude='accounts' --exclude='data' \
-  ./ /opt/1panel/apps/astrbot/astrbot/data/plugins/astrbot-plugin-wpp/
+  ./ /opt/1panel/apps/astrbot/astrbot/data/plugins/astrbot_plugin_wpp/
 # 5. 重启并确认版本/在线/WS
 docker restart astrbot
 docker logs --since 60s astrbot 2>&1 \
-  | grep -E "astrbot-plugin-wpp|账号已在线|WS.*connected|Traceback"
+  | grep -E "astrbot_plugin_wpp|账号已在线|WS.*connected|Traceback"
 ```
 
 > 若部署目录不是 host bind mount，可用 `docker cp`；原理相同。升级前建议备份
@@ -282,7 +282,7 @@ docker logs --since 60s astrbot 2>&1 \
 ## 同步 GitHub（每次更新必做）
 
 ```bash
-cd /root/dev/astrbot-plugin-wpp
+cd /root/dev/astrbot_plugin_wpp
 # 1. 脱敏检查（必须无输出 — vendor 域名 / authcode / 真实 wxid / 宿主 IP 严禁公开）
 #    用法: 把下面 4 个占位符替换成本机真实敏感串后再执行（不要把真实值写回本文件）
 grep -rniE "<vendor-domain>|<authcode>|<real-wxid>|<host-ip>" --include="*.py" --include="*.json" --include="*.md" .
@@ -315,7 +315,7 @@ git push origin master
 ### /help 看不到新命令 / 版本不对
 `/help` 从 `metadata.yaml` 读取版本并遍历命令注册表。若版本仍旧：
 确认部署目录的 `metadata.yaml` 已更新、AstrBot 已重启，并检查启动日志
-`Plugin astrbot-plugin-wpp (x.y.z)`。
+`Plugin astrbot_plugin_wpp (x.y.z)`。
 
 ### 进群欢迎语没有发
 1. 文件传输助手发 `/welcome list`：确认已开启、模式、生效群、每群基线人数；

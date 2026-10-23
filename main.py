@@ -1,4 +1,4 @@
-"""astrbot-plugin-wpp 插件入口。
+"""astrbot_plugin_wpp 插件入口。
 
 官方平台适配器插件范式 (docs/zh/dev/plugin-platform-adapter.md):
   - main.py 必须有 Star 类 (类名以 Plugin 结尾会被自动发现)
@@ -30,7 +30,7 @@ from .wpp_media import enrich_media
 from . import wpp_adapter  # noqa: F401  (must be at module top level)
 
 
-PLUGIN_NAME = "astrbot-plugin-wpp"
+PLUGIN_NAME = "astrbot_plugin_wpp"
 
 
 class WppPlugin(Star):
@@ -186,6 +186,7 @@ class WppPlugin(Star):
             "effective_proactive_groups": sorted(set(acct.proactive_groups) | set(auto_proactive)),
             "group_reply": acct.group_reply,
             "require_at_mention": acct.require_at_mention,
+            "private_allow_all": bool(getattr(acct, "private_allow_all", False)),
             "lazy_media": bool(getattr(acct, "lazy_media", True)),
             "stats": acct.stats,
         }
@@ -283,12 +284,34 @@ class WppPlugin(Star):
             if mode not in ("atbot", "none", "all"):
                 return error_response("group_reply 只支持 atbot / none / all")
             updates["group_reply"] = mode
-        if "require_at_mention" in payload:
-            updates["require_at_mention"] = bool(payload.get("require_at_mention"))
+        for flag in ("require_at_mention", "private_allow_all"):
+            if flag not in payload:
+                continue
+            raw = payload.get(flag)
+            if isinstance(raw, bool):
+                updates[flag] = raw
+            elif isinstance(raw, (int, float)):
+                updates[flag] = raw != 0
+            elif isinstance(raw, str) and raw.strip().lower() in (
+                "true",
+                "1",
+                "yes",
+                "on",
+                "false",
+                "0",
+                "no",
+                "off",
+                "",
+            ):
+                updates[flag] = raw.strip().lower() in ("true", "1", "yes", "on")
+            else:
+                return error_response(f"{flag} 必须是布尔值")
         for field, value in updates.items():
             setattr(acct, field, value)
-        if updates:
-            acct.save_policy()
+        if updates and not acct.save_policy():
+            return error_response(
+                "策略已应用到当前运行，但写入配置文件失败（重启后会丢失），请检查磁盘权限与日志"
+            )
         if inst is not None:
             inst.sync_heartflow_whitelist("dashboard")
         return json_response({"ok": True, "account": self._account_policy_view(acct)})
@@ -497,7 +520,8 @@ class WppPlugin(Star):
                     lines.append(
                         f"    block={acct['block_users']} "
                         f"blacklist={acct['blacklist_groups']} "
-                        f"require_at={acct['require_at_mention']}"
+                        f"require_at={acct['require_at_mention']} "
+                        f"private_allow_all={acct['private_allow_all']}"
                     )
             yield event.plain_result("\n".join(lines))
             return
@@ -537,24 +561,29 @@ class WppPlugin(Star):
                 yield event.plain_result("group_reply 只支持 atbot / none / all")
                 return
             acct.group_reply = value
-        elif field == "require_at_mention":
+        elif field in ("require_at_mention", "private_allow_all"):
             value = (values[0].lower() if values else "").strip()
             if value not in ("true", "false", "1", "0", "on", "off"):
-                yield event.plain_result("require_at_mention 只支持 true/false")
+                yield event.plain_result(f"{field} 只支持 true/false")
                 return
-            acct.require_at_mention = value in ("true", "1", "on")
+            setattr(acct, field, value in ("true", "1", "on"))
         else:
             yield event.plain_result(f"不支持的字段: {field}")
             return
 
-        acct.save_policy()
+        if not acct.save_policy():
+            yield event.plain_result(
+                "⚠️ 策略已应用到当前运行，但写入配置文件失败（重启后会丢失），请检查磁盘权限与日志"
+            )
+            return
         if inst is not None:
             inst.sync_heartflow_whitelist("command")
         yield event.plain_result(
             f"已更新 {account_id}: group_reply={acct.group_reply} "
             f"allow={sorted(acct.allow_users)} "
             f"proactive={self._account_policy_view(acct)['effective_proactive_groups']} "
-            f"require_at={acct.require_at_mention}"
+            f"require_at={acct.require_at_mention} "
+            f"private_allow_all={acct.private_allow_all}"
         )
 
     @filter.permission_type(PermissionType.ADMIN)

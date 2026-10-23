@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.14.0 (2026-10-23) — 安全加固、生命周期修复与插件名合规
+
+### 变更
+- **插件名改为合法 Python 标识符**：`metadata.name` / `PLUGIN_NAME` 由
+  `astrbot-plugin-wpp` 改为 `astrbot_plugin_wpp`（AstrBot 4.29 安装校验要求
+  `str.isidentifier()`）。部署目录与 `plugin_data` 目录同步改名，见 DEPLOY.md。
+- **私聊默认 fail-closed**：新增 `wpp_private_allow_all`（默认 `false`）。
+  空白名单不再默认放行所有私聊；需要“全部放行”必须显式开启。
+  已有 `allow_users` 配置不受影响。
+
+### 修复
+- **白名单撤销不生效**：策略文件中的 `allow_users` 改为整体替换，`/user del`
+  或面板删除后不会在下次热加载时从平台配置种子复活。
+- **策略保存失败静默**：`save_policy()` 返回是否落盘；命令与 Web API 在失败时
+  明确回错，不再假装成功。
+- **发送全部失败静默**：`event.send()` / `send_by_session()` 在 `sent=0` 且
+  `failed>0` 时抛错；部分失败记 warning。
+- **生命周期竞态**：`run()` 增加 lifecycle 锁与 shutdown 检查，启动异常重新
+  抛出并清理 WS/worker/webhook；`terminate()` 与 `run()` 共用幂等
+  `_stop_resources()`，authcode 占用锁在失败路径上正确释放。
+- **WS 鉴权 URL**：带其它 query 的 WS 地址也会追加 `authcode`，并做 URL 编码、
+  去重；连接日志隐去 token。
+- **去重时机**：消息处理成功提交后才写入去重；处理异常不再导致重推消息被
+  永久丢弃。队列关闭排空增加 10s 总时限。
+- **vendor 瞬时故障重试**：查询类接口对 HTTP 5xx / 非 JSON 响应退避重试；
+  业务 `Code!=0` 不重试。发送类接口仍保持不重试（避免重复发送）。
+- **出站图片上限与阻塞**：图片引用限制 20MiB（本地文件/HTTP 流式/base64），
+  文件与 base64 编码移入线程池；SILK 分段编码不再阻塞事件循环。
+- **缓存/锁有界**：昵称、群资料、发送锁与节流表增加 TTL 清理与容量上限。
+- **Heartflow 配置写入**：临时文件 fsync 后再原子替换，异常时清理临时文件。
+- **账号目录隔离**：`safe_account_id()` 净化丢信息时追加原始 id 指纹，
+  避免不同中文账号落到同一目录。
+
 ## v0.13.0 (2026-10-23) — 平台技术名恢复中文，图标分离
 
 ### 变更

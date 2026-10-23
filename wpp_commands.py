@@ -68,6 +68,16 @@ class FilehelperCommands:
                 return
         await reply(f"未知命令: {cmd}\n用 /help 查看全部命令。")
 
+    async def _save(self, reply) -> bool:
+        """落盘并如实告知失败；内存里的修改不会回滚。"""
+        if self.account.save_policy():
+            return True
+        await reply(
+            "⚠️ 修改已应用到当前运行，但写入配置文件失败（重启后会丢失），"
+            "请检查磁盘权限与日志。"
+        )
+        return False
+
     # ------------------------------------------------------------------ 命令实现
     async def _user(self, args: list[str], reply) -> None:
         acct = self.account
@@ -83,7 +93,8 @@ class FilehelperCommands:
         if action == "add" and targets:
             added = [t for t in targets if t not in acct.allow_users]
             acct.allow_users.update(targets)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             await reply(
                 f"✅ 已授权私聊白名单: {', '.join(added) or '(均已存在)'}\n"
                 f"当前 ({len(acct.allow_users)}): {', '.join(sorted(acct.allow_users))}"
@@ -94,7 +105,8 @@ class FilehelperCommands:
             missing = [t for t in targets if t not in acct.allow_users]
             for t in removed:
                 acct.allow_users.discard(t)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             msg = f"✅ 已移除私聊白名单: {', '.join(removed) or '(无)'}"
             if missing:
                 msg += f"\n⚠️ 不在白名单: {', '.join(missing)}"
@@ -125,7 +137,8 @@ class FilehelperCommands:
                 if t in acct.allow_users:
                     acct.allow_users.discard(t)
                     removed_from_wl.append(t)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             note = (
                 f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
             )
@@ -139,7 +152,8 @@ class FilehelperCommands:
             missing = [t for t in targets if t not in acct.block_users]
             for t in removed:
                 acct.block_users.discard(t)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             msg = f"✅ 已移出私聊黑名单: {', '.join(removed) or '(无)'}"
             if missing:
                 msg += f"\n⚠️ 不在黑名单: {', '.join(missing)}"
@@ -167,7 +181,8 @@ class FilehelperCommands:
             for t in targets:
                 acct.allow_users.add(t)
                 acct.blacklist_groups.discard(t)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             groups = sorted(u for u in acct.allow_users if u.endswith("@chatroom"))
             await reply(
                 f"✅ 已授权群白名单: {', '.join(added) or '(均已存在)'}\n"
@@ -180,7 +195,8 @@ class FilehelperCommands:
             missing = [t for t in targets if t not in acct.allow_users]
             for t in removed:
                 acct.allow_users.discard(t)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             groups = sorted(u for u in acct.allow_users if u.endswith("@chatroom"))
             msg = f"✅ 已移除群白名单: {', '.join(removed) or '(无)'}"
             if missing:
@@ -201,7 +217,8 @@ class FilehelperCommands:
                 if t in acct.allow_users:
                     acct.allow_users.discard(t)
                     removed_from_wl.append(t)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             note = (
                 f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
             )
@@ -214,7 +231,8 @@ class FilehelperCommands:
             missing = [t for t in targets if t not in acct.blacklist_groups]
             for t in removed:
                 acct.blacklist_groups.discard(t)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             msg = f"✅ 已移出黑名单群: {', '.join(removed) or '(无)'}"
             if missing:
                 msg += f"\n⚠️ 不在黑名单: {', '.join(missing)}"
@@ -270,7 +288,8 @@ class FilehelperCommands:
             added = [t for t in targets if t not in acct.proactive_groups and t not in auto_groups]
             already = [t for t in targets if t in acct.proactive_groups or t in auto_groups]
             acct.proactive_groups.update(t for t in targets if t not in auto_groups)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             msg = f"✅ 已加入主动回复候选群: {', '.join(added) or '(无新增)'}"
             if already:
                 msg += f"\nℹ️ 已在候选中 (含白名单自动纳入): {', '.join(already)}"
@@ -293,7 +312,8 @@ class FilehelperCommands:
             missing = [t for t in targets if t not in acct.proactive_groups]
             for t in removed:
                 acct.proactive_groups.discard(t)
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             msg = f"✅ 已移出显式主动候选: {', '.join(removed) or '(无)'}"
             if missing:
                 msg += f"\n⚠️ 不在显式名单: {', '.join(missing)}"
@@ -327,7 +347,8 @@ class FilehelperCommands:
             )
             return
         acct.group_reply = mode
-        acct.save_policy()
+        if not await self._save(reply):
+            return
         await reply(
             f"✅ 群消息准入模式已设为: {mode}\n"
             "(atbot=只放行@ / none=忽略群 / all=放行所有群消息, 不强制回复)"
@@ -338,11 +359,13 @@ class FilehelperCommands:
         mode = (args[0] if args else "").strip().lower()
         if mode in ("on", "1", "true"):
             acct.require_at_mention = True
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             await reply("✅ 群聊已设为必须 @ 才回复")
         elif mode in ("off", "0", "false"):
             acct.require_at_mention = False
-            acct.save_policy()
+            if not await self._save(reply):
+                return
             await reply("✅ 群聊已解除必须 @ (主动候选群内的未@消息仍由决策插件判断)")
         else:
             await reply(

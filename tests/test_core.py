@@ -7,7 +7,7 @@
   4. wpp_storage: 去重环形缓冲落盘 + 旧数据目录迁移
 
 在 AstrBot 容器内运行 (有 astrbot 依赖):
-  docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/tests -v
+  docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot_plugin_wpp/tests -v
 """
 
 import importlib
@@ -22,10 +22,10 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-msgs = importlib.import_module("astrbot-plugin-wpp.wpp_messages")
-policy = importlib.import_module("astrbot-plugin-wpp.wpp_policy")
-sender = importlib.import_module("astrbot-plugin-wpp.wpp_send")
-storage = importlib.import_module("astrbot-plugin-wpp.wpp_storage")
+msgs = importlib.import_module("astrbot_plugin_wpp.wpp_messages")
+policy = importlib.import_module("astrbot_plugin_wpp.wpp_policy")
+sender = importlib.import_module("astrbot_plugin_wpp.wpp_send")
+storage = importlib.import_module("astrbot_plugin_wpp.wpp_storage")
 
 
 def ws_payload(events, etype="sync_message"):
@@ -354,14 +354,18 @@ class TestPolicy(unittest.TestCase):
         self.assertTrue(policy.is_allowed(p, "u", True, "g@chatroom", "@小助手 hi"))
 
     def test_private_whitelist(self):
-        self.assertTrue(policy.is_allowed(policy.PolicySnapshot(), "u", False, "", "hi"))
+        # 默认 fail-closed: 没显式开启 private_allow_all 时, 空白名单不放行私聊
+        self.assertFalse(policy.is_allowed(policy.PolicySnapshot(), "u", False, "", "hi"))
         p = policy.PolicySnapshot(allow_users={"u1"})
         self.assertTrue(policy.is_allowed(p, "u1", False, "", "hi"))
         self.assertFalse(policy.is_allowed(p, "u2", False, "", "hi"))
+        # 显式开启后才恢复"全部放行"
+        p_all = policy.PolicySnapshot(private_allow_all=True)
+        self.assertTrue(policy.is_allowed(p_all, "u", False, "", "hi"))
 
     def test_block_users_wins_in_all_pass_mode(self):
-        """全部放行模式 (空 allow_users) 下, block_users 仍然拒绝。"""
-        p = policy.PolicySnapshot(block_users={"wxid_bad"})
+        """全部放行模式 (private_allow_all=True) 下, block_users 仍然拒绝。"""
+        p = policy.PolicySnapshot(block_users={"wxid_bad"}, private_allow_all=True)
         self.assertFalse(policy.is_allowed(p, "wxid_bad", False, "", "hi"))
         self.assertTrue(policy.is_allowed(p, "wxid_ok", False, "", "hi"))
 
@@ -456,8 +460,15 @@ class TestStorage(unittest.TestCase):
                 self.assertEqual(store.load_members()["chatrooms"], {})
 
     def test_safe_account_id(self):
-        self.assertEqual(storage.safe_account_id("../evil/x"), "evil_x")
+        self.assertTrue(storage.safe_account_id("../evil/x").startswith("evil_x-"))
+        self.assertNotIn("/", storage.safe_account_id("../evil/x"))
         self.assertEqual(storage.safe_account_id(""), "account")
+
+    def test_safe_account_id_does_not_merge_sanitized_names(self):
+        """净化后同名的不同账号必须落到不同目录 (否则白名单/去重互相串)。"""
+        self.assertNotEqual(
+            storage.safe_account_id("北京店"), storage.safe_account_id("上海店")
+        )
 
     def test_safe_account_id_keeps_chinese_platform_instances_isolated(self):
         suffix = "个人微信（Pad协议）"

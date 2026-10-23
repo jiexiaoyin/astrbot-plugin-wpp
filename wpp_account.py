@@ -4,7 +4,7 @@
   - API 客户端 (WppClient, base_url + 该账号 authcode)
   - WS 实时通道任务 (连 vendor /ws/sync, 该账号 authcode 鉴权)
   - 有界消息队列 + 单 worker (WS 收包不被媒体下载阻塞)
-  - 白名单/群策略/黑名单 (data/plugin_data/astrbot-plugin-wpp/accounts/<id>/ 持久化)
+  - 白名单/群策略/黑名单 (data/plugin_data/astrbot_plugin_wpp/accounts/<id>/ 持久化)
   - 去重状态 (环形缓冲, 落盘, 重启后仍有效)
   - 机器人身份 (_self_wxid/_self_nickname)
   - filehelper 命令 (wpp_commands.FilehelperCommands)
@@ -24,11 +24,12 @@ import json
 import logging
 import time
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from astrbot import logger
 
 # 只压本插件 WS 连接自己的 websockets 日志, 不改动全局第三方 logger。
-_WS_LOGGER = logging.getLogger("astrbot-plugin-wpp.websockets")
+_WS_LOGGER = logging.getLogger("astrbot_plugin_wpp.websockets")
 _WS_LOGGER.setLevel(logging.WARNING)
 
 from .wpp_client import WppClient
@@ -65,6 +66,45 @@ from .wpp_storage import AccountStore
 QUEUE_MAXSIZE = 1000
 DEDUP_MAX = 500
 FILTER_REPORT_INTERVAL = 60.0  # 过滤日志汇总间隔 (秒)
+# 关闭时清空队列的总时限：每条 3s × 1000 条会让进程退出挂近 50 分钟。
+DRAIN_DEADLINE_S = 10.0
+
+# 日志里必须隐去的 query 参数 (值只显示为 <set>)
+_SENSITIVE_QUERY_KEYS = {"authcode", "token", "key", "secret", "password"}
+
+
+def _ws_url_with_authcode(url: str, authcode: str) -> str:
+    """把 authcode 作为 query 参数拼到 WS 地址上。
+
+    旧实现只在 URL 完全没有 ``?`` 时才拼接, 带其它 query 的地址根本不会
+    带上鉴权; 而且直接字符串拼接没有 URL 编码, authcode 含 ``&``/``+`` 时
+    会被截断或改写。这里统一用 query 解析/编码, 并去掉重复的 authcode。
+    """
+    if not authcode:
+        return url
+    parts = urlsplit(url)
+    query = [
+        (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k != "authcode"
+    ]
+    query.append(("authcode", authcode))
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
+def _safe_ws_url(url: str) -> str:
+    """日志用地址: 隐去敏感 query 参数的值, 避免 authcode 进日志。"""
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    query = [
+        (k, "<set>" if k.lower() in _SENSITIVE_QUERY_KEYS and v else v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
 
 
 class WppAccount:
@@ -85,6 +125,7 @@ class WppAccount:
         blacklist_groups: set[str] | None = None,
         block_users: set[str] | None = None,
         require_at_mention: bool = False,
+        private_allow_all: bool = False,
         proactive_groups: set[str] | None = None,
         lazy_media: bool = True,
         send_interval_ms: int = 300,
@@ -107,7 +148,7 @@ class WppAccount:
             repeat_guard_limit=max(1, int(repeat_guard_limit or 2)),
         )
 
-        # 运行时数据 (data/plugin_data/astrbot-plugin-wpp/accounts/<id>/)
+        # 运行时数据 (data/plugin_data/astrbot_plugin_wpp/accounts/<id>/)
         self.store = AccountStore(account_id)
 
         # 白名单/群策略 (账号级, 独立); 持久化文件优先于启动配置
@@ -116,6 +157,8 @@ class WppAccount:
         self.blacklist_groups: set[str] = set(blacklist_groups or ())
         self.block_users: set[str] = set(block_users or ())
         self.require_at_mention = require_at_mention
+        # 空白名单是否放行所有私聊（显式开关；默认关闭）。
+        self.private_allow_all = bool(private_allow_all)
         # 主动回复候选群: 未 @ 消息也放行, 但适配器不唤醒, 由决策插件决定
         self.proactive_groups: set[str] = set(proactive_groups or ())
         # 进群欢迎 (v0.9.0): 原始配置段由 _load_policy_file 填充, 每次现解析。
@@ -209,10 +252,11 @@ class WppAccount:
         delay = 1.0
         while True:
             try:
-                url = self.ws_url
-                if self.authcode and "?" not in url:
-                    url = f"{url}?authcode={self.authcode}"
-                logger.info(f"[WPP:{self.account_id} WS] connecting: {self.ws_url}")
+                url = _ws_url_with_authcode(self.ws_url, self.authcode)
+                logger.info(
+                    f"[WPP:{self.account_id} WS] connecting: "
+                    f"{_safe_ws_url(self.ws_url)}"
+                )
                 async with websockets.connect(
                     url,
                     ping_interval=20,
@@ -290,13 +334,23 @@ class WppAccount:
     async def _drain_queue(self) -> None:
         if self._queue is None:
             return
+        deadline = time.monotonic() + DRAIN_DEADLINE_S
         while not self._queue.empty():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning(
+                    f"[WPP:{self.account_id}] 关闭时队列仍未清空 "
+                    f"(剩余 {self._queue.qsize()} 条)，已停止等待"
+                )
+                break
             try:
                 src = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
             try:
-                await asyncio.wait_for(self._process_src(src), timeout=3)
+                await asyncio.wait_for(
+                    self._process_src(src), timeout=min(3.0, remaining)
+                )
             except Exception:  # noqa: BLE001
                 pass
             finally:
@@ -347,18 +401,19 @@ class WppAccount:
         at_list = parse_at_list(src)
         is_group = bool(chatroom_id)
 
-        # 去重: 在处理入口记录, 避免同一消息因重连/重推被处理两次
-        # (filehelper 命令也去重 — WS 重连会重推历史消息, 不能让 /group add 重复执行)
+        # 去重: 入口只检查, 真正记录放到"处理完成"之后 ——
+        # 入队后若下载/提交抛异常, worker 会丢弃这条消息; 若此时已记录,
+        # 重连重推时就会被当成重复而永久丢失。故意丢弃的分支 (命令/过滤/
+        # 系统消息) 仍会立即记录, 避免重推时反复处理。
         msg_key = src_msg_key(src)
-        if msg_key:
-            if msg_key in self._seen_msg_ids:
-                logger.debug(f"[WPP:{self.account_id}] 重复消息已跳过: id={msg_key}")
-                return
-            self._record_seen_msg(msg_key)
+        if msg_key and msg_key in self._seen_msg_ids:
+            logger.debug(f"[WPP:{self.account_id}] 重复消息已跳过: id={msg_key}")
+            return
 
         # filehelper 管理命令 (自身发出的消息 direction=outgoing, 需在方向过滤之前处理)
         if src_is_filehelper(src) and content.startswith("/"):
             await self._handle_filehelper_command(content)
+            self._record_seen_msg(msg_key)
             return
 
         # 群成员变动通知 (v0.9.0): 只调度后台 diff, 不阻塞收信;
@@ -374,6 +429,7 @@ class WppAccount:
             logger.debug(
                 f"[WPP:{self.account_id}] 已忽略消息: reason={reason} from={from_wxid or '-'}"
             )
+            self._record_seen_msg(msg_key)
             return
 
         logger.debug(
@@ -397,6 +453,7 @@ class WppAccount:
                 f"[WPP:{self.account_id}] 被白名单/群策略过滤: "
                 f"from={from_wxid} group={chatroom_id or '-'} reason={decision.reason}"
             )
+            self._record_seen_msg(msg_key)
             return
 
         # 入站昵称/群资料预取 (v0.7.0):
@@ -420,6 +477,7 @@ class WppAccount:
             group_profile=group_profile,
         )
         if msg is None:
+            self._record_seen_msg(msg_key)
             return
 
         # 未 @ 的群消息 (主动候选群 / all 观察模式) 只构造占位组件:
@@ -447,6 +505,9 @@ class WppAccount:
         for path in temp_files:
             event.track_temporary_local_file(path)
         self.platform.commit_event(event)
+        # 提交成功后才记为已处理: 之前的异常会让这条消息保持"未处理",
+        # 重推时有机会重试, 而不是永久丢失。
+        self._record_seen_msg(msg_key)
 
     def _record_seen_msg(self, msg_id_key: str) -> None:
         if not msg_id_key or msg_id_key in self._seen_msg_ids:
@@ -476,6 +537,7 @@ class WppAccount:
             proactive_groups=set(self.proactive_groups),
             group_reply=self.group_reply,
             require_at_mention=self.require_at_mention,
+            private_allow_all=self.private_allow_all,
             self_wxid=self._self_wxid,
             self_nickname=self._self_nickname,
         )
@@ -495,9 +557,11 @@ class WppAccount:
         self._join_welcome_raw = dict(jw) if isinstance(jw, dict) else {}
         if not data:
             return
-        arr = data.get("allow_users", [])
+        # 文件里一旦存在 allow_users，它就是权威值（整体替换，不做并集）：
+        # 否则启动配置里的种子项永远删不掉，/user del 与面板移除都会“复活”。
+        arr = data.get("allow_users")
         if isinstance(arr, list):
-            self.allow_users.update(str(u).strip() for u in arr if str(u).strip())
+            self.allow_users = {str(u).strip() for u in arr if str(u).strip()}
         if isinstance(data.get("group_reply"), str):
             self.group_reply = data["group_reply"]
         bl = data.get("blacklist_groups", [])
@@ -508,13 +572,15 @@ class WppAccount:
             self.block_users = {str(u).strip() for u in bu if str(u).strip()}
         if data.get("require_at_mention") is not None:
             self.require_at_mention = bool(data["require_at_mention"])
+        if data.get("private_allow_all") is not None:
+            self.private_allow_all = bool(data["private_allow_all"])
         # 只在文件里显式存在时覆盖, 避免旧配置文件把平台配置里的初始值清空
         pg = data.get("proactive_groups")
         if isinstance(pg, list):
             self.proactive_groups = {str(g).strip() for g in pg if str(g).strip()}
 
-    def save_policy(self) -> None:
-        """持久化白名单/群策略 (atomic write)。
+    def save_policy(self) -> bool:
+        """持久化白名单/群策略 (atomic write)；返回是否真正落盘。
 
         **读-改-写**：只覆盖本函数负责的键，保留 ``join_welcome`` 以及未知键 ——
         旧版整份重写会把用户在文件里手写的欢迎语配置抹掉。
@@ -530,6 +596,7 @@ class WppAccount:
                     "blacklist_groups": sorted(self.blacklist_groups),
                     "block_users": sorted(self.block_users),
                     "require_at_mention": self.require_at_mention,
+                    "private_allow_all": self.private_allow_all,
                     "proactive_groups": sorted(self.proactive_groups),
                 }
             )
@@ -538,8 +605,9 @@ class WppAccount:
             logger.info(f"[WPP:{self.account_id}] 运行时配置已持久化 → {self.store.config_path}")
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[WPP:{self.account_id}] 写配置文件失败: {e}")
-            return
+            return False
         self._sync_heartflow_whitelist("policy")
+        return True
 
     def _sync_heartflow_whitelist(self, reason: str) -> None:
         """白名单变化后同步给 Heartflow (平台级聚合所有账号)。"""

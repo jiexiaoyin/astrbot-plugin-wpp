@@ -9,7 +9,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-join_events = importlib.import_module("astrbot-plugin-wpp.wpp_join_events")
+join_events = importlib.import_module("astrbot_plugin_wpp.wpp_join_events")
 
 ROOM = "10000000001@chatroom"
 

@@ -17,7 +17,7 @@
   7. group_reply == all → 放行 (观察模式, 不唤醒)
   8. 其他 → 拒绝
   私聊:
-  9. 空白名单 = 全部放行; 否则只放行白名单
+  9. private_allow_all=true → 全部放行; 否则只放行白名单 (默认 fail-closed)
 
 **主动回复与群白名单共用同一份列表**: `allow_users` 里的 `@chatroom`
 条目天然就是主动候选群, 不需要再复制到 `proactive_groups`; 后者仅用于
@@ -39,6 +39,9 @@ class PolicySnapshot:
     proactive_groups: set[str] = field(default_factory=set)
     group_reply: str = "atbot"
     require_at_mention: bool = False
+    # 空白名单不再隐式放行所有私聊（fail-open → fail-closed）。
+    # 需要开放私聊时必须显式打开，避免删光白名单后机器人对所有人可见。
+    private_allow_all: bool = False
     self_wxid: str = ""
     self_nickname: str = ""
 
@@ -126,8 +129,9 @@ def classify(
             return Admission(True, reason="group_all")
         return Admission(False, reason="no_at")
 
-    if not policy.allow_users:
+    if policy.private_allow_all:
         return Admission(True, reason="private_all")
+    # 群白名单项（@chatroom）不应影响私聊：只对私聊白名单里的 wxid 放行。
     allowed = bool(from_wxid) and from_wxid in policy.allow_users
     return Admission(allowed, reason="private_allow" if allowed else "private_whitelist")
 

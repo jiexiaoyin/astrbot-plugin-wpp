@@ -136,10 +136,22 @@ def _read_config(path: Path) -> tuple[dict, bool]:
 
 
 def _write_config(path: Path, data: dict, had_bom: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.wpp-tmp")
     text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    tmp.write_text(text, encoding="utf-8-sig" if had_bom else "utf-8")
-    os.replace(tmp, path)
+    try:
+        # fsync 后再 replace: 断电时不能留下 0 字节的 Heartflow 配置
+        with open(tmp, "w", encoding="utf-8-sig" if had_bom else "utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _update_live_instance(whitelist: list[str]) -> bool:

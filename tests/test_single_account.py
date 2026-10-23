@@ -7,7 +7,7 @@
   4. WppAccount 白名单/状态按实例 id 隔离到 accounts/<id>/
 
 在 AstrBot 容器内运行 (有 astrbot 依赖):
-  docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/tests/test_single_account.py -v
+  docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot_plugin_wpp/tests/test_single_account.py -v
 """
 
 import asyncio
@@ -24,12 +24,12 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-mod = importlib.import_module("astrbot-plugin-wpp.wpp_adapter")
+mod = importlib.import_module("astrbot_plugin_wpp.wpp_adapter")
 WppPlatformAdapter = mod.WppPlatformAdapter
 _parse_account = mod._parse_account
 authcode_fingerprint = mod.authcode_fingerprint
-WppAccount = importlib.import_module("astrbot-plugin-wpp.wpp_account").WppAccount
-storage = importlib.import_module("astrbot-plugin-wpp.wpp_storage")
+WppAccount = importlib.import_module("astrbot_plugin_wpp.wpp_account").WppAccount
+storage = importlib.import_module("astrbot_plugin_wpp.wpp_storage")
 
 
 class FakePlatform:
@@ -100,8 +100,16 @@ class TestAuthcodeLock(unittest.TestCase):
         self.assertNotIn("wxa_super_secret", fp)
 
     def test_same_authcode_cannot_run_twice(self):
-        a = WppPlatformAdapter({"id": "wpp-a", "wpp_auth_token": "same_token"}, {}, asyncio.Queue())
-        b = WppPlatformAdapter({"id": "wpp-b", "wpp_auth_token": "same_token"}, {}, asyncio.Queue())
+        a = WppPlatformAdapter(
+            {"id": "wpp-a", "wpp_auth_token": "same_token", "wpp_ws_url": "ws://127.0.0.1:1"},
+            {},
+            asyncio.Queue(),
+        )
+        b = WppPlatformAdapter(
+            {"id": "wpp-b", "wpp_auth_token": "same_token", "wpp_ws_url": "ws://127.0.0.1:1"},
+            {},
+            asyncio.Queue(),
+        )
         fp = authcode_fingerprint("same_token")
         WppPlatformAdapter._ACTIVE_AUTHCODES[fp] = a.instance_id
         try:
@@ -110,6 +118,28 @@ class TestAuthcodeLock(unittest.TestCase):
             self.assertIn("同一 authcode", str(ctx.exception))
         finally:
             WppPlatformAdapter._ACTIVE_AUTHCODES.pop(fp, None)
+
+    def test_startup_failure_releases_resources_and_authcode_lock(self):
+        """启动失败必须清理已注册的 authcode 锁, 否则重启会一直撞锁。"""
+        adapter = WppPlatformAdapter(
+            {
+                "id": "wpp-fail",
+                "wpp_auth_token": "tok-fail",
+                "wpp_ws_url": "ws://127.0.0.1:1",
+            },
+            {},
+            asyncio.Queue(),
+        )
+        from unittest.mock import AsyncMock
+
+        with patch.object(
+            adapter, "_ensure_logged_in", AsyncMock(side_effect=RuntimeError("vendor down"))
+        ):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(adapter.run())
+        self.assertNotIn(
+            authcode_fingerprint("tok-fail"), WppPlatformAdapter._ACTIVE_AUTHCODES
+        )
 
     def test_missing_authcode_fails_fast(self):
         adapter = WppPlatformAdapter({"id": "wpp-empty"}, {}, asyncio.Queue())
@@ -218,6 +248,47 @@ class TestWppAccountIsolation(unittest.TestCase):
         """平台 meta().id 为实例 id。"""
         plat = FakePlatform(instance_id="wpp_custom")
         self.assertEqual(plat.meta().id, "wpp_custom")
+
+    def test_allow_users_file_replaces_instead_of_merging(self):
+        """文件里的 allow_users 是权威值: 删除后不能在下次加载时复活。"""
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
+                acct = WppAccount(
+                    FakePlatform(), "wpp_revoke", "tok", "http://x:1", "",
+                    allow_users={"wxid_old"},
+                )
+                acct.save_policy()
+                acct.store.save_config(
+                    {"allow_users": ["wxid_new"], "private_allow_all": True}
+                )
+                acct._load_policy_file()
+                self.assertEqual(acct.allow_users, {"wxid_new"})
+                self.assertTrue(acct.private_allow_all)
+
+    def test_save_policy_reports_write_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
+                acct = WppAccount(FakePlatform(), "wpp_fail", "tok", "http://x:1", "")
+                with patch.object(acct.store, "save_config", side_effect=OSError("disk full")):
+                    self.assertFalse(acct.save_policy())
+
+    def test_bool_config_parses_false_strings(self):
+        """平台配置表单可能把布尔值传成字符串, "false" 不能被当成 True。"""
+        self.assertFalse(mod._as_bool("false"))
+        self.assertFalse(mod._as_bool("0"))
+        self.assertTrue(mod._as_bool("", default=True))  # 空值走默认
+        self.assertTrue(mod._as_bool("true"))
+        self.assertTrue(mod._as_bool(True))
+
+    def test_private_allow_all_parsed_from_platform_config(self):
+        cfg = {
+            "id": "wpp-pa",
+            "wpp_auth_token": "x",
+            "wpp_private_allow_all": "false",
+        }
+        self.assertFalse(_parse_account(cfg)["private_allow_all"])
+        cfg["wpp_private_allow_all"] = "true"
+        self.assertTrue(_parse_account(cfg)["private_allow_all"])
 
 
 if __name__ == "__main__":

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# astrbot-plugin-wpp 部署脚本: docker cp → 依赖 → 重启 → 日志检查
+# astrbot_plugin_wpp 部署脚本: docker cp → 依赖 → 重启 → 日志检查
 set -euo pipefail
 
 PLUGIN_SRC="$(cd "$(dirname "$0")" && pwd)"
 CONTAINER="astrbot"
-PLUGIN_DIR="/AstrBot/data/plugins/astrbot-plugin-wpp"
+PLUGIN_DIR="/AstrBot/data/plugins/astrbot_plugin_wpp"
 
 echo "==> [1/4] 拷贝插件到容器 $CONTAINER"
 docker exec "$CONTAINER" sh -c "mkdir -p $PLUGIN_DIR"

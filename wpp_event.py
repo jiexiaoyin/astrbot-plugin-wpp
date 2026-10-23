@@ -8,6 +8,7 @@ AstrBot 约定:
 
 from typing import TYPE_CHECKING
 
+from astrbot import logger
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import Reply
 
@@ -24,12 +25,16 @@ class WppMessageEvent(AstrMessageEvent):
         self.account_id = account_id
 
     async def send(self, message: MessageChain) -> None:
-        """真正发送到微信, 然后走基类 metric 上报。"""
+        """真正发送到微信, 然后走基类 metric 上报。
+
+        全部组件都失败时必须抛错：否则核心会当成“已回复”，日志里也看不到失败。
+        """
+        stats: dict | None = None
         try:
             if self._api is not None:
                 chain = list(message.chain)
                 self._fill_reply_sender(chain)
-                await send_chain(
+                stats = await send_chain(
                     self._api,
                     self.session.session_id,
                     chain,
@@ -37,6 +42,17 @@ class WppMessageEvent(AstrMessageEvent):
                 )
         finally:
             await super().send(message)
+        if not stats:
+            return
+        if stats.get("failed") and not stats.get("sent"):
+            detail = "; ".join(str(e) for e in stats.get("errors", [])[:3])
+            raise RuntimeError(f"WPP 发送全部失败: {detail or 'unknown error'}")
+        if stats.get("failed"):
+            logger.warning(
+                f"[WPP:{self.account_id}] 部分消息发送失败 "
+                f"(sent={stats.get('sent')}, failed={stats.get('failed')}): "
+                f"{stats.get('errors')}"
+            )
 
     def _fill_reply_sender(self, chain: list) -> None:
         """补全核心生成的 Reply 的发送者信息。

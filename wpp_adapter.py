@@ -20,6 +20,7 @@ AstrBot 平台适配器插件范式 (docs/zh/dev/plugin-platform-adapter.md):
 """
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -81,7 +82,7 @@ def _parse_account(platform_config: dict) -> dict | None:
     一个平台实例 = 一个 `wpp_auth_token` (X-Access-Token = authcode) =
     一个微信账号。多账号请添加多个平台实例 (id 唯一, 各自 authcode)。
     返回 {id, authcode, allow_users, group_reply, blacklist_groups,
-          require_at_mention, proactive_groups, base_url, ws_url}；
+          require_at_mention, private_allow_all, proactive_groups, base_url, ws_url}；
     未配置 authcode 时返回 None。
     """
     base_url = str(platform_config.get("wpp_base_url", "http://127.0.0.1:18062")).rstrip("/")
@@ -107,6 +108,9 @@ def _parse_account(platform_config: dict) -> dict | None:
         "blacklist_groups": set(),
         "block_users": _as_csv(platform_config.get("wpp_block_users", "")),
         "require_at_mention": False,
+        "private_allow_all": _as_bool(
+            platform_config.get("wpp_private_allow_all"), False
+        ),
         "proactive_groups": _as_csv(platform_config.get("wpp_proactive_groups", "")),
         "base_url": base_url,
         "ws_url": ws_url,
@@ -135,6 +139,11 @@ WPP_CONFIG_METADATA = {
         "description": "白名单 wxid / 群ID (逗号分隔)",
         "type": "string",
         "hint": "wxid 控制私聊, @chatroom 群ID 同时作为群白名单和主动回复候选（与白名单共用）。作为启动初始值；日常修改请在 WPP 控制台进行。",
+    },
+    "wpp_private_allow_all": {
+        "description": "空白名单时放行所有私聊",
+        "type": "bool",
+        "hint": "默认 false：私聊只放行白名单里的 wxid（群 ID 不影响私聊）。只有调试/内部账号才建议开启；开启后仍受 wpp_block_users 约束。作为启动初始值；日常修改请在 WPP 控制台进行。",
     },
     "wpp_block_users": {
         "description": "私聊黑名单 wxid (逗号分隔)",
@@ -201,6 +210,38 @@ WPP_CONFIG_METADATA = {
         "type": "bool",
         "hint": "默认 false=仅 WS (推荐)。true=额外开 webhook server + vendor 注册 (WS 断时 webhook 也收不到, 实际无用)",
     },
+    "webhook_host": {
+        "description": "webhook 监听地址",
+        "type": "string",
+        "hint": "默认 0.0.0.0。仅当 vendor 能访问该地址时才需要；本机反代可用 127.0.0.1。",
+    },
+    "webhook_port": {
+        "description": "webhook 监听端口",
+        "type": "int",
+        "hint": "默认 6199。",
+    },
+    "webhook_public_url": {
+        "description": "webhook 公网地址",
+        "type": "string",
+        "hint": "vendor 回调使用的公网 URL（含协议/域名，不含路径）；留空时用 http://<host>:<port>。",
+    },
+    "webhook_path": {
+        "description": "webhook 路径前缀",
+        "type": "string",
+        "hint": "默认 /wpp/webhook；实际路径会自动追加 URL token。",
+    },
+    "webhook_token": {
+        "description": "webhook URL token",
+        "type": "string",
+        "secret": True,
+        "hint": "留空时自动生成并持久化。属于 URL 的一部分，请勿外泄。",
+    },
+    "webhook_secret": {
+        "description": "webhook HMAC 密钥",
+        "type": "string",
+        "secret": True,
+        "hint": "强烈建议填写：vendor 注册回调时用于签名，插件收到请求时校验 HMAC。留空则仅靠 URL token 鉴权。",
+    },
 }
 
 
@@ -214,6 +255,7 @@ WPP_CONFIG_METADATA = {
         "wpp_base_url": "http://127.0.0.1:18062",
         "wpp_auth_token": "",
         "wpp_allow_users": "",
+        "wpp_private_allow_all": False,
         "wpp_block_users": "",
         "wpp_group_reply": "atbot",
         "wpp_proactive_groups": "",
@@ -316,6 +358,7 @@ class WppPlatformAdapter(Platform):
                 blacklist_groups=acfg.get("blacklist_groups") or set(),
                 block_users=acfg.get("block_users") or set(),
                 require_at_mention=acfg.get("require_at_mention", False),
+                private_allow_all=acfg.get("private_allow_all", False),
                 proactive_groups=acfg.get("proactive_groups") or set(),
                 lazy_media=self.lazy_media,
                 send_interval_ms=self.send_interval_ms,
@@ -338,7 +381,9 @@ class WppPlatformAdapter(Platform):
         self.webhook_path = f"{self.webhook_path}/{self.webhook_token}"
         self.webhook_secret = str(platform_config.get("webhook_secret", "") or "").strip()
         self.webhook_host = str(platform_config.get("webhook_host", "0.0.0.0"))
-        self.webhook_port = int(platform_config.get("webhook_port", 6199))
+        self.webhook_port = max(
+            1, min(_as_int(platform_config.get("webhook_port"), 6199), 65535)
+        )
         self.webhook_public_url = str(platform_config.get("webhook_public_url", "") or "").rstrip(
             "/"
         )
@@ -347,6 +392,9 @@ class WppPlatformAdapter(Platform):
         self._server = None
         self._status_task: asyncio.Task | None = None
         self._shutdown_event: asyncio.Event | None = None
+        # 串行化 run() 的启动阶段与 terminate()，避免 terminate 在启动
+        # 中途执行后，启动代码又把 WS/worker 拉起来（资源泄漏 + 锁已释放）。
+        self._lifecycle_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ Platform
     def meta(self) -> PlatformMetadata:
@@ -385,6 +433,11 @@ class WppPlatformAdapter(Platform):
                 "WPP: 未配置 wpp_auth_token（X-Access-Token = authcode）。"
                 "一个平台实例只能绑定一个微信账号；多账号请添加多个平台实例。"
             )
+        if not acct.ws_url and not self.webhook_enabled:
+            raise ValueError(
+                "WPP: 未配置任何入站通道（wpp_ws_url 为空且 wpp_webhook_enabled=false），"
+                "平台启动后收不到消息。请填写 WS 地址，或显式启用 webhook。"
+            )
 
         # 一个 authcode 同时只能有一个轮询者：两个实例会各自建 WS，互抢消息。
         fp = authcode_fingerprint(acct.authcode)
@@ -394,30 +447,51 @@ class WppPlatformAdapter(Platform):
                 f"同一 authcode 已被平台实例 {owner} 使用；"
                 "一个 authcode 对应一个微信账号，只能由一个实例轮询"
             )
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+        if self._shutdown_event.is_set():
+            # terminate() 已经执行过（例如平台启用失败后被管理器清理），
+            # 不再拉起任何资源。
+            return
         self._ACTIVE_AUTHCODES[fp] = self.instance_id
-        self._shutdown_event = asyncio.Event()
         try:
-            # ① 确认在线 + 刷新身份 + 启动 worker/WS/维护循环
-            try:
+            async with self._lifecycle_lock:
+                if self._shutdown_event.is_set():
+                    return
+                # ① 确认在线 + 刷新身份 + 启动 worker/WS/维护循环
                 await self._ensure_logged_in(acct)
+                if self._shutdown_event.is_set():
+                    return
                 await self._refresh_account_status(acct)
+                if self._shutdown_event.is_set():
+                    return
                 acct.start()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[WPP:{acct.account_id}] 账号启动失败: {e}")
+                if self._shutdown_event.is_set():
+                    return
 
-            # ② 可选: webhook server (仅 wpp_webhook_enabled=true)
-            if self.webhook_enabled:
-                await self._start_webhook_server()
+                # ② 可选: webhook server (仅 wpp_webhook_enabled=true)
+                if self.webhook_enabled:
+                    await self._start_webhook_server()
+                if self._shutdown_event.is_set():
+                    return
 
-            # ③ 后台状态循环 (检查在线 + 心跳)
-            self._status_task = asyncio.create_task(self._account_status_loop())
+                # ③ 后台状态循环 (检查在线 + 心跳)
+                self._status_task = asyncio.create_task(self._account_status_loop())
 
-            # ④ 启动时同步 Heartflow 白名单 (此时各插件均已加载)
-            self.sync_heartflow_whitelist("startup")
+                # ④ 启动时同步 Heartflow 白名单 (此时各插件均已加载)
+                self.sync_heartflow_whitelist("startup")
 
             # ⑤ 持有平台主任务直到 terminate(); 后台任务异常不会让 run 提前退出。
             await self._shutdown_event.wait()
+        except Exception as e:
+            # 启动失败必须把已拉起的 WS/worker 停掉再抛给平台管理器；
+            # 否则平台被标 ERROR 但连接仍在，重启还会撞上 authcode 锁。
+            logger.error(f"[WPP:{acct.account_id}] 平台启动失败，清理资源: {e}")
+            raise
         finally:
+            # 正常 terminate 和异常退出都走同一套幂等清理。
+            async with self._lifecycle_lock:
+                await self._stop_resources()
             if self._ACTIVE_AUTHCODES.get(fp) == self.instance_id:
                 self._ACTIVE_AUTHCODES.pop(fp, None)
 
@@ -467,10 +541,17 @@ class WppPlatformAdapter(Platform):
         await self._runner.setup()
         self._server = web.TCPSite(self._runner, self.webhook_host, self.webhook_port)
         await self._server.start()
+        # 日志里绝不输出 URL token（它等价于回调鉴权凭证）。
+        safe_path = self.webhook_path.rsplit("/", 1)[0] + "/<token>"
         logger.info(
             f"[WPP] webhook server started at "
-            f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
+            f"http://{self.webhook_host}:{self.webhook_port}{safe_path}"
         )
+        if not self.webhook_secret:
+            logger.warning(
+                "[WPP] webhook_secret 为空：回调仅靠 URL token 鉴权，"
+                "建议在平台配置里设置 HMAC 密钥"
+            )
 
         if not self.accounts:
             return
@@ -480,10 +561,11 @@ class WppPlatformAdapter(Platform):
                 callback_url = self.webhook_public_url + self.webhook_path
             else:
                 callback_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
+            safe_url = callback_url.replace(self.webhook_token, "<token>")
             api = self.accounts[0]._api
-            ok = await api.set_webhook(callback_url)
+            ok = await api.set_webhook(callback_url, self.webhook_secret)
             logger.info(
-                f"[WPP] register webhook to vendor: {'OK' if ok else 'FAILED'} url={callback_url}"
+                f"[WPP] register webhook to vendor: {'OK' if ok else 'FAILED'} url={safe_url}"
             )
             biz = await api.set_business_webhook(callback_url)
             sync = await api.start_auto_sync(callback_url)
@@ -602,30 +684,37 @@ class WppPlatformAdapter(Platform):
 
     async def terminate(self) -> None:
         """清理: 账号 WS/worker + 状态循环 + webhook server + authcode 锁。"""
-        if self._shutdown_event is not None:
-            self._shutdown_event.set()
-        try:
-            if self._status_task:
-                self._status_task.cancel()
-                try:
-                    await self._status_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-                self._status_task = None
-            if self.account is not None:
-                try:
-                    await self.account.stop()
-                except Exception:  # noqa: BLE001
-                    pass
-            if self._runner:
-                await self._runner.cleanup()
-                self._runner = None
-                self._server = None
-        finally:
+        if self._shutdown_event is None:
+            self._shutdown_event = asyncio.Event()
+        self._shutdown_event.set()
+        # 与 run() 的启动阶段互斥：terminate 在启动中途到达时，等启动完成
+        # 再统一清理，避免“清理完又被启动代码拉起”。
+        async with self._lifecycle_lock:
+            await self._stop_resources()
             if self.account is not None:
                 fp = authcode_fingerprint(self.account.authcode)
                 if self._ACTIVE_AUTHCODES.get(fp) == self.instance_id:
                     self._ACTIVE_AUTHCODES.pop(fp, None)
+
+    async def _stop_resources(self) -> None:
+        """幂等清理：run() 的 finally 与 terminate() 都会调用。"""
+        task, self._status_task = self._status_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        if self.account is not None:
+            try:
+                await self.account.stop()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[WPP] 停止账号资源失败: {e}")
+        runner, self._runner = self._runner, None
+        self._server = None
+        if runner is not None:
+            try:
+                await runner.cleanup()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[WPP] 清理 webhook server 失败: {e}")
 
     # ------------------------------------------------------------------ webhook 兜底
     async def _handle_webhook_health(self, request: Any) -> Any:
@@ -696,6 +785,7 @@ class WppPlatformAdapter(Platform):
 
     async def send_by_session(self, session: MessageSession, message_chain: MessageChain) -> None:
         """AstrBot 回复/主动推送统一走这里 → 对应账号的 WPP 发送。"""
+        stats: dict | None = None
         try:
             acct = self._find_account_for_send(session)
             if acct is None:
@@ -704,7 +794,7 @@ class WppPlatformAdapter(Platform):
                 )
                 return
             logger.info(f"[WPP:{acct.account_id}] send_by_session: to={session.session_id}")
-            await send_chain(
+            stats = await send_chain(
                 acct._api,
                 session.session_id,
                 list(message_chain.chain),
@@ -713,6 +803,14 @@ class WppPlatformAdapter(Platform):
         finally:
             # 基类负责 metric 上报
             await super().send_by_session(session, message_chain)
+        if stats and stats.get("failed") and not stats.get("sent"):
+            detail = "; ".join(str(e) for e in stats.get("errors", [])[:3])
+            raise RuntimeError(f"WPP send_by_session 全部失败: {detail or 'unknown error'}")
+        if stats and stats.get("failed"):
+            logger.warning(
+                f"[WPP] send_by_session 部分失败 (sent={stats.get('sent')}, "
+                f"failed={stats.get('failed')}): {stats.get('errors')}"
+            )
 
 
 def _webhook_token_for(instance_id: str) -> str:

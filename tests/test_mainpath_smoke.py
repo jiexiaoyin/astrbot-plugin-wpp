@@ -20,9 +20,9 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-account_mod = importlib.import_module("astrbot-plugin-wpp.wpp_account")
-plugin_main = importlib.import_module("astrbot-plugin-wpp.main")
-constants = importlib.import_module("astrbot-plugin-wpp.wpp_constants")
+account_mod = importlib.import_module("astrbot_plugin_wpp.wpp_account")
+plugin_main = importlib.import_module("astrbot_plugin_wpp.main")
+constants = importlib.import_module("astrbot_plugin_wpp.wpp_constants")
 
 
 class StubStore:
@@ -162,6 +162,7 @@ class TestMainPathSmoke(unittest.TestCase):
         proactive_groups=None,
         require_at_mention=False,
         welcome=None,
+        private_allow_all=True,
     ):
         acc = account_mod.WppAccount(
             Plat(),
@@ -173,6 +174,7 @@ class TestMainPathSmoke(unittest.TestCase):
             group_reply=group_reply,
             proactive_groups=proactive_groups,
             require_at_mention=require_at_mention,
+            private_allow_all=private_allow_all,
         )
         acc._self_wxid = "wxid_bot"
         acc._self_nickname = "小助手"
@@ -313,9 +315,13 @@ class TestMainPathSmoke(unittest.TestCase):
             len(evs) == 1 and type(evs[-1].msg.message[-1]).__name__ == "Record",
         )
 
-        a = self.new_acc(allow_users={"wxid_f"})
+        a = self.new_acc(allow_users={"wxid_f"}, private_allow_all=False)
         evs = self.run_src(a, {"sender_id": "wxid_stranger", "msg_id": "m9", "content": "hi"})
         check("whitelist blocks stranger", len(evs) == 0)
+        # 默认 fail-closed: 没开 private_allow_all 且白名单为空 → 私聊全部拒绝
+        a = self.new_acc(private_allow_all=False)
+        evs = self.run_src(a, {"sender_id": "wxid_f", "msg_id": "m9b", "content": "hi"})
+        check("private fail-closed by default", len(evs) == 0)
 
         # 生产主动回复与群白名单共用: 群白名单直接放行未 @ 消息
         a = self.new_acc(allow_users={"123@chatroom"})
@@ -674,6 +680,95 @@ class TestMainPathSmoke(unittest.TestCase):
             [],
             f"{len(cases) - len(failed)}/{len(cases)} passed; failed={failed}",
         )
+
+
+class TestProcessHardening(unittest.TestCase):
+    """去重时机 / 关闭排水时限 / WS 鉴权 URL (v0.13.x 加固)。"""
+
+    def setUp(self):
+        self._store_patch = patch.object(account_mod, "AccountStore", StubStore)
+        self._client_patch = patch.object(account_mod, "WppClient", FakeClient)
+        self._store_patch.start()
+        self._client_patch.start()
+        self.addCleanup(self._store_patch.stop)
+        self.addCleanup(self._client_patch.stop)
+
+    def new_acc(self):
+        acc = account_mod.WppAccount(
+            Plat(),
+            "stub",
+            "authcode",
+            "http://127.0.0.1:1",
+            "",
+            private_allow_all=True,
+        )
+        acc._self_wxid = "wxid_bot"
+        acc._self_nickname = "小助手"
+        return acc
+
+    def test_dedupe_is_recorded_only_after_commit(self):
+        """提交失败的消息不能被记为已处理, 否则重推会永久丢失。"""
+        a = self.new_acc()
+        src = {"sender_id": "wxid_f", "msg_id": "m-commit", "content": "hi"}
+        a.platform.commit_event = lambda ev: (_ for _ in ()).throw(RuntimeError("core down"))
+        with self.assertRaises(RuntimeError):
+            asyncio.run(a._process_src(src))
+        self.assertNotIn("m-commit", a._seen_msg_ids)
+
+        # 重推 → 正常提交
+        a.platform.commit_event = lambda ev: a.platform.events.append(ev)
+        asyncio.run(a._process_src(src))
+        self.assertEqual(len(a.platform.events), 1)
+        self.assertIn("m-commit", a._seen_msg_ids)
+
+        # 再推 → 去重
+        asyncio.run(a._process_src(src))
+        self.assertEqual(len(a.platform.events), 1)
+
+    def test_filtered_message_is_recorded_immediately(self):
+        """被策略丢弃的消息要记去重, 避免每次重推都重新走一遍过滤。"""
+        a = self.new_acc()
+        a.private_allow_all = False
+        asyncio.run(a._process_src({"sender_id": "wxid_f", "msg_id": "m-denied", "content": "hi"}))
+        self.assertIn("m-denied", a._seen_msg_ids)
+        self.assertEqual(a.platform.events, [])
+
+    def test_drain_queue_stops_at_deadline(self):
+        a = self.new_acc()
+
+        async def _run():
+            a._queue = asyncio.Queue()
+            a._queue.put_nowait({"sender_id": "wxid_f", "msg_id": "q1", "content": "hi"})
+            with patch.object(account_mod, "DRAIN_DEADLINE_S", 0.0):
+                await a._drain_queue()
+            return a._queue.qsize()
+
+        self.assertEqual(asyncio.run(_run()), 1)
+
+    def test_ws_url_appends_authcode_with_existing_query(self):
+        url = account_mod._ws_url_with_authcode("wss://host/ws?foo=1", "tok")
+        self.assertIn("foo=1", url)
+        self.assertIn("authcode=tok", url)
+
+    def test_ws_url_encodes_and_deduplicates_authcode(self):
+        authcode = "a&b=c+d"
+        url = account_mod._ws_url_with_authcode(
+            "wss://host/ws?authcode=old", authcode
+        )
+        from urllib.parse import parse_qsl, urlsplit
+
+        params = dict(parse_qsl(urlsplit(url).query))
+        self.assertEqual(params["authcode"], authcode)
+        self.assertEqual(url.count("authcode="), 1)
+
+    def test_safe_ws_url_redacts_secret_values(self):
+        safe = account_mod._safe_ws_url(
+            "wss://host/ws?authcode=SECRET&foo=1&token=ABC"
+        )
+        self.assertNotIn("SECRET", safe)
+        self.assertNotIn("ABC", safe)
+        self.assertIn("foo=1", safe)
+        self.assertIn("authcode=%3Cset%3E", safe)
 
 
 if __name__ == "__main__":

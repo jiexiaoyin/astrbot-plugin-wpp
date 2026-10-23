@@ -9,8 +9,8 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-sender = importlib.import_module("astrbot-plugin-wpp.wpp_send")
-event_mod = importlib.import_module("astrbot-plugin-wpp.wpp_event")
+sender = importlib.import_module("astrbot_plugin_wpp.wpp_send")
+event_mod = importlib.import_module("astrbot_plugin_wpp.wpp_event")
 
 from astrbot.api.message_components import At, AtAll, Location, Plain, Reply, Share
 
@@ -227,6 +227,44 @@ class TestFillReplySender(unittest.TestCase):
         chain = [Reply(id="other", sender_id="wxid_x")]
         self._event()._fill_reply_sender(chain)
         self.assertEqual(chain[0].sender_id, "wxid_x")
+
+
+class TestSendFailurePropagation(unittest.IsolatedAsyncioTestCase):
+    """全部组件发送失败必须抛错, 不能让核心误以为已回复。"""
+
+    def _event(self, api):
+        from types import SimpleNamespace
+
+        ev = object.__new__(event_mod.WppMessageEvent)
+        ev._api = api
+        ev.account_id = "stub"
+        ev.session = SimpleNamespace(session_id="wxid_f")
+        ev.message_obj = SimpleNamespace(
+            message_id="m1",
+            sender=SimpleNamespace(user_id="wxid_f", nickname="张三"),
+        )
+        ev.platform_meta = SimpleNamespace(name="wpp")
+        return ev
+
+    async def test_all_failed_raises(self):
+        from astrbot.api.event import MessageChain
+
+        class Api:
+            async def send_text(self, *a, **k):
+                raise RuntimeError("vendor down")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            await self._event(Api()).send(MessageChain([Plain("你好")]))
+        self.assertIn("发送全部失败", str(ctx.exception))
+
+    async def test_success_does_not_raise(self):
+        from astrbot.api.event import MessageChain
+
+        class Api:
+            async def send_text(self, *a, **k):
+                return {"Code": 0}
+
+        await self._event(Api()).send(MessageChain([Plain("你好")]))
 
 
 if __name__ == "__main__":

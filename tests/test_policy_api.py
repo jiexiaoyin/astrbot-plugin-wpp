@@ -12,8 +12,8 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-main_mod = importlib.import_module("astrbot-plugin-wpp.main")
-constants = importlib.import_module("astrbot-plugin-wpp.wpp_constants")
+main_mod = importlib.import_module("astrbot_plugin_wpp.main")
+constants = importlib.import_module("astrbot_plugin_wpp.wpp_constants")
 
 
 def fake_account():
@@ -25,6 +25,7 @@ def fake_account():
         proactive_groups={"123@chatroom"},
         group_reply="atbot",
         require_at_mention=False,
+        private_allow_all=False,
         lazy_media=True,
         save_policy=lambda: None,
         stats={

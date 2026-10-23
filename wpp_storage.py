@@ -4,15 +4,16 @@ AstrBot 插件规范: 运行时数据放 `data/plugin_data/<plugin_name>/`, 不�
 (插件更新/重装会覆盖源码目录)。见 docs/zh/dev/star/guides/storage.md。
 
 布局:
-  data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/wpp_whitelist.json
-  data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/dedup.json
-  data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/members.json  (v0.9.0 群成员基线)
+  data/plugin_data/astrbot_plugin_wpp/accounts/<account_id>/wpp_whitelist.json
+  data/plugin_data/astrbot_plugin_wpp/accounts/<account_id>/dedup.json
+  data/plugin_data/astrbot_plugin_wpp/accounts/<account_id>/members.json  (v0.9.0 群成员基线)
 
 不在插件源码目录下保留任何读写兜底；AstrBot 插件更新/重装会覆盖源码目录。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -25,7 +26,7 @@ from astrbot import logger
 
 from .wpp_constants import PLATFORM_NAME, RUNTIME_ID_SLUG
 
-PLUGIN_NAME = "astrbot-plugin-wpp"
+PLUGIN_NAME = "astrbot_plugin_wpp"
 _ACCOUNT_ID_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
@@ -37,12 +38,19 @@ def safe_account_id(account_id: str) -> str:
     映射到稳定的 ASCII ``wpp``，既避免冲突，也沿用 v0.12.x 的运行时目录和
     webhook token，不必迁移已有数据。
     """
-    raw = str(account_id or "account")
+    original = str(account_id or "account")
+    raw = original
     if raw == PLATFORM_NAME:
         raw = RUNTIME_ID_SLUG
     elif raw.startswith(PLATFORM_NAME):
         raw = RUNTIME_ID_SLUG + raw[len(PLATFORM_NAME) :]
-    aid = _ACCOUNT_ID_RE.sub("_", raw).strip("._") or "account"
+    sanitized = _ACCOUNT_ID_RE.sub("_", raw)
+    aid = sanitized.strip("._") or "account"
+    if sanitized != raw or aid != sanitized or len(raw) > 64:
+        # 净化过程丢了信息（中文/特殊字符被替换、截断等）时追加原始 id 的
+        # 稳定指纹，避免「北京店」和「上海店」都落到 accounts/wpp。
+        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:12]
+        aid = f"{aid[:48]}-{digest}"
     return aid[:64]
 
 
@@ -130,6 +138,8 @@ class AccountStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp, path)
         except Exception:
             try:

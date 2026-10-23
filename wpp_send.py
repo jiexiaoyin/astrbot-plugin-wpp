@@ -631,6 +631,12 @@ async def _encode_silk_segments(path: str) -> list[tuple[bytes, int]]:
     pcm = await _decode_pcm_24k(path)
     if not pcm:
         return []
+    # pysilk.encode 是同步 CPU 密集调用, 长语音可能阻塞事件循环数秒;
+    # 放到线程池, 不拖慢 WS 收包和发送节流。
+    return await asyncio.to_thread(_silk_segments_sync, pysilk, pcm)
+
+
+def _silk_segments_sync(pysilk: Any, pcm: bytes) -> list[tuple[bytes, int]]:
     rate = 24000
     total_samples = len(pcm) // 2
     max_ms = VOICE_MAX_MS

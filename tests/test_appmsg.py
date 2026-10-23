@@ -10,7 +10,7 @@
   7. 媒体富化保留 At 组件
 
 在 AstrBot 容器内运行:
-  docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot-plugin-wpp/tests -v
+  docker exec astrbot python3 -m pytest /AstrBot/data/plugins/astrbot_plugin_wpp/tests -v
 """
 
 import importlib
@@ -23,10 +23,10 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-msgs = importlib.import_module("astrbot-plugin-wpp.wpp_messages")
-appmsg = importlib.import_module("astrbot-plugin-wpp.wpp_appmsg")
-policy = importlib.import_module("astrbot-plugin-wpp.wpp_policy")
-media = importlib.import_module("astrbot-plugin-wpp.wpp_media")
+msgs = importlib.import_module("astrbot_plugin_wpp.wpp_messages")
+appmsg = importlib.import_module("astrbot_plugin_wpp.wpp_appmsg")
+policy = importlib.import_module("astrbot_plugin_wpp.wpp_policy")
+media = importlib.import_module("astrbot_plugin_wpp.wpp_media")
 
 
 LINK_XML = (

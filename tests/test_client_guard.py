@@ -12,7 +12,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN_DIR))
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 
-client_mod = importlib.import_module("astrbot-plugin-wpp.wpp_client")
+client_mod = importlib.import_module("astrbot_plugin_wpp.wpp_client")
 
 
 class TestGroupProfile(unittest.IsolatedAsyncioTestCase):
@@ -226,6 +226,121 @@ class TestOutboundGuard(unittest.IsolatedAsyncioTestCase):
             await client.send_text("wxid_a", "收到")
             await client.send_text("wxid_b", "收到")
         self.assertEqual(client.send_stats["sent"], 2)
+
+
+class _FakeResp:
+    def __init__(self, status=200, text="{}", chunks=None):
+        self.status = status
+        self._text = text
+        self._chunks = chunks or []
+        self.headers = {"Content-Type": "image/jpeg"}
+        self.content = self
+
+    async def text(self):
+        return self._text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def iter_chunked(self, _size):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+        self.last_kwargs = {}
+
+    def _next(self, kwargs):
+        self.last_kwargs = kwargs
+        resp = self.responses[min(self.calls, len(self.responses) - 1)]
+        self.calls += 1
+        return resp
+
+    def post(self, *a, **k):
+        return self._next(k)
+
+    def get(self, *a, **k):
+        return self._next(k)
+
+
+class TestPostRetry(unittest.IsolatedAsyncioTestCase):
+    async def _client(self, responses):
+        client = client_mod.WppClient("http://127.0.0.1:18062", "token")
+        session = _FakeSession(responses)
+        client._session_acquire = AsyncMock(return_value=session)
+        sleeper = patch.object(client_mod.asyncio, "sleep", AsyncMock())
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+        return client, session
+
+    async def test_retries_5xx_for_query_endpoint(self):
+        client, session = await self._client(
+            [_FakeResp(503, "busy"), _FakeResp(200, '{"Code": 0, "Data": {}}')]
+        )
+        resp = await client._post("/Group/GetChatRoomInfoDetail", {})
+        self.assertEqual(resp["Code"], 0)
+        self.assertEqual(session.calls, 2)
+
+    async def test_retries_bad_json(self):
+        client, session = await self._client(
+            [_FakeResp(200, "<html>oops"), _FakeResp(200, '{"Code": 0}')]
+        )
+        resp = await client._post("/User/GetOnlineInfo", {})
+        self.assertEqual(resp["Code"], 0)
+        self.assertEqual(session.calls, 2)
+
+    async def test_business_error_is_not_retried(self):
+        client, session = await self._client(
+            [_FakeResp(200, '{"Code": -1, "Success": false}')]
+        )
+        with self.assertRaises(client_mod.WppApiError):
+            await client._post("/User/GetOnlineInfo", {})
+        self.assertEqual(session.calls, 1)
+
+    async def test_non_retry_safe_endpoint_never_retries_5xx(self):
+        client, session = await self._client([_FakeResp(503, "busy")])
+        with self.assertRaises(client_mod.WppApiError):
+            await client._post("/Msg/SendTxt", {"ToWxid": "wxid_a"}, retry_safe=False)
+        self.assertEqual(session.calls, 1)
+
+
+class TestImageResolveLimits(unittest.IsolatedAsyncioTestCase):
+    async def test_local_file_over_limit_rejected(self):
+        import tempfile
+        from pathlib import Path as _Path
+
+        client = client_mod.WppClient("http://127.0.0.1:18062", "token")
+        with tempfile.TemporaryDirectory() as d:
+            p = _Path(d) / "big.jpg"
+            with open(p, "wb") as f:
+                f.truncate(client_mod.MAX_IMAGE_BYTES + 1)
+            with self.assertRaises(client_mod.WppApiError) as ctx:
+                await client._resolve_image_to_base64(str(p))
+            self.assertEqual(ctx.exception.code, "image_too_large")
+
+    async def test_http_stream_over_limit_rejected(self):
+        client = client_mod.WppClient("http://127.0.0.1:18062", "token")
+        chunk = b"x" * (client_mod.MAX_IMAGE_BYTES // 2 + 1)
+        session = _FakeSession([_FakeResp(200, chunks=[chunk, chunk])])
+        with patch.object(client, "_session_acquire", AsyncMock(return_value=session)):
+            with patch.object(
+                client, "_is_allowed_image_url", return_value=True
+            ):
+                with self.assertRaises(client_mod.WppApiError) as ctx:
+                    await client._resolve_image_to_base64("https://x.qpic.cn/a.jpg")
+        self.assertEqual(ctx.exception.code, "image_too_large")
+
+    async def test_base64_prefix_over_limit_rejected(self):
+        client = client_mod.WppClient("http://127.0.0.1:18062", "token")
+        payload = "base64://" + "A" * ((client_mod.MAX_IMAGE_BYTES // 3 + 10) * 4)
+        with self.assertRaises(client_mod.WppApiError):
+            await client._resolve_image_to_base64(payload)
 
 
 if __name__ == "__main__":

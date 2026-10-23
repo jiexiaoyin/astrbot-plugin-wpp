@@ -42,7 +42,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 
 1. **安装插件**：把本仓库放入 AstrBot 插件目录后重启：
    ```bash
-   docker cp astrbot-plugin-wpp astrbot:/AstrBot/data/plugins/
+   docker cp astrbot_plugin_wpp astrbot:/AstrBot/data/plugins/
    docker restart astrbot
    ```
 2. **添加平台**：Dashboard → 平台适配器 → 添加「个人微信（Pad协议）」，至少填写：
@@ -152,7 +152,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
   - 「刷新状态」立即向 vendor 查询在线状态；有未保存修改时只刷新状态、
     保留表单；
   - 响应式布局 + 深色主题，适配 Dashboard 主题切换。
-  - 入口：Dashboard → **插件** → 已安装插件 → `astrbot-plugin-wpp` →
+  - 入口：Dashboard → **插件** → 已安装插件 → `astrbot_plugin_wpp` →
     **打开插件UI界面**（打开的是第一页 `console`，即控制台）；
     也可进入插件详情 → 行为 → 页面条目 → 「打开」。
   - 控制台是**运行时策略的唯一日常入口**；vendor 地址/authcode、平台实例、
@@ -216,7 +216,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 **约定**：
 
 - 群 ID 以 `@chatroom` 结尾；私聊 ID 是 `wxid_...`。
-- 所有修改立即持久化到 `data/plugin_data/astrbot-plugin-wpp/accounts/<账号>/wpp_whitelist.json`。
+- 所有修改立即持久化到 `data/plugin_data/astrbot_plugin_wpp/accounts/<账号>/wpp_whitelist.json`。
 - 黑白名单互斥；`block_users` 优先级最高，主动候选不能绕过。
 - `/group del` 会把群从群白名单和自动主动候选中一起移除；如仍需主动观察，
   改用 `/proactive add`（仅在未配置群白名单时有效）。
@@ -247,7 +247,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
                 │ ① WS 实时通道 (wss://vendor/ws/sync?authcode=账号)
                 │    每账号一个独立 WS 连接 (通过 authcode 隔离)
                 ▼
-[astrbot 容器] astrbot-plugin-wpp (Platform 适配器)
+[astrbot 容器] astrbot_plugin_wpp (Platform 适配器)
                 │ WppAccount (每账号: WS 连接 + 白名单 + 去重 + 身份)
                 │ ② 解析 → WppMessageEvent → 事件总线
                 ▼
@@ -288,7 +288,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 | `logo-platform.png` | 平台适配器图标（机器人添加/列表，黄色微信） |
 
 运行时数据（白名单、去重状态、群成员基线 `members.json`）写在 AstrBot 标准
-插件数据目录：`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/`。
+插件数据目录：`data/plugin_data/astrbot_plugin_wpp/accounts/<account_id>/`。
 插件不再读写自身源码目录下的 `accounts/`、`data/`；旧版残留可备份后删除
 （见 [DEPLOY.md](DEPLOY.md)）。
 
@@ -298,7 +298,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 
 ```bash
 # 1. 拷入 AstrBot 容器插件目录
-docker cp astrbot-plugin-wpp astrbot:/AstrBot/data/plugins/
+docker cp astrbot_plugin_wpp astrbot:/AstrBot/data/plugins/
 
 # 2. 容器内确认依赖 (aiohttp + websockets — WS 主通道必需)
 docker exec astrbot sh -c 'python3 -c "import aiohttp, websockets" || pip install aiohttp websockets'
@@ -310,7 +310,7 @@ docker restart astrbot
 #    填配置 (见下表) → 保存启用
 
 # 5. 确认版本与启动状态
-docker logs --since 60s astrbot 2>&1 | grep -E "astrbot-plugin-wpp|账号已在线|WS.*connected"
+docker logs --since 60s astrbot 2>&1 | grep -E "astrbot_plugin_wpp|账号已在线|WS.*connected"
 ```
 
 也可以直接执行仓库自带的 `./deploy.sh`（拷贝 → 依赖检查 → 重启 → 日志检查）。
@@ -364,7 +364,7 @@ Dashboard 再添加一个「个人微信（Pad协议）」平台实例：
 - `id` 全平台唯一（决定 AstrBot UMO 前缀和运行时数据目录）；
 - `wpp_auth_token` 填该账号自己的 authcode；
 - 独立 WS 连接、白名单/私聊黑名单/群策略/群黑名单
-  （默认实例写入 `data/plugin_data/astrbot-plugin-wpp/accounts/wpp/wpp_whitelist.json`，
+  （默认实例写入 `data/plugin_data/astrbot_plugin_wpp/accounts/wpp/wpp_whitelist.json`，
   `-shop2` 等后缀实例写入对应的 `accounts/wpp-shop2/`）；
 - 独立 filehelper 命令、消息去重和机器人身份。
 
@@ -592,7 +592,7 @@ python -m compileall -q .
 | 平台 ID | 默认实例 id 为 `个人微信（Pad协议）`，Heartflow UMO 前缀随实例 id 变化；运行时目录固定使用 ASCII `wpp` 前缀 |
 
 升级插件只需替换插件目录并重启 AstrBot；白名单和去重数据保存在
-`data/plugin_data/astrbot-plugin-wpp/`，不会因替换插件文件丢失。
+`data/plugin_data/astrbot_plugin_wpp/`，不会因替换插件文件丢失。
 
 > ⚠️ **v0.13.0 升级**：平台技术名恢复为 **`个人微信（Pad协议）`**。
 > AstrBot 4.29 Dashboard 的机器人列表/新增下拉直接显示平台技术名和配置
