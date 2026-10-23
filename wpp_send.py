@@ -579,12 +579,106 @@ async def _send_record(
         ext = os.path.splitext(path)[1].lower()
         type_map = {".amr": 0, ".speex": 1, ".mp3": 2, ".wav": 3, ".silk": 4}
         fmt = type_map.get(ext, 3)
-        voice_time = _wav_duration_ms(path) if ext == ".wav" else 0
+        # vendor 对 VoiceTime=0 直接返回 Code=-2，必须带真实时长 (mp3 也一样)
+        voice_time = await _audio_duration_ms(path, ext)
+        if voice_time <= 0:
+            logger.warning(
+                f"[WPP:{account_id}] 无法获取语音时长, vendor 可能拒发: {path}"
+            )
         await api.send_voice(to_wxid, data, fmt_type=fmt, voice_time_ms=voice_time)
         return _one_result(True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[WPP:{account_id}] send_voice failed: {e}")
         return _one_result(False, f"send_voice: {e}")
+
+
+async def _audio_duration_ms(path: str, ext: str) -> int:
+    """拿语音时长 (毫秒)。ffprobe 优先, wav/mp3 有内置兜底。"""
+    if ext == ".wav":
+        ms = _wav_duration_ms(path)
+        if ms > 0:
+            return ms
+    ms = await _ffprobe_duration_ms(path)
+    if ms > 0:
+        return ms
+    if ext == ".mp3":
+        return _mp3_duration_ms(path)
+    return 0
+
+
+async def _ffprobe_duration_ms(path: str) -> int:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 0 and stdout.strip():
+            return int(float(stdout.decode().strip()) * 1000)
+    except Exception:  # noqa: BLE001 - 没有 ffprobe 时走内置解析
+        pass
+    return 0
+
+
+def _mp3_duration_ms(path: str) -> int:
+    """纯 Python 解析 MPEG Layer III 帧时长 (ffprobe 不可用时的兜底)。"""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        pos = 0
+        if len(data) >= 10 and data[:3] == b"ID3":
+            size = (
+                ((data[6] & 0x7F) << 21)
+                | ((data[7] & 0x7F) << 14)
+                | ((data[8] & 0x7F) << 7)
+                | (data[9] & 0x7F)
+            )
+            pos = 10 + size
+        bitrates = {
+            1: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+            2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+        }
+        sample_rates = {
+            1: (44100, 48000, 32000),
+            2: (22050, 24000, 16000),
+            25: (11025, 12000, 8000),
+        }
+        total_ms = 0.0
+        frames = 0
+        n = len(data)
+        while pos + 4 <= n:
+            if data[pos] != 0xFF or (data[pos + 1] & 0xE0) != 0xE0:
+                pos += 1
+                continue
+            version = {3: 1, 2: 2, 0: 25}.get((data[pos + 1] >> 3) & 0x03)
+            layer = (data[pos + 1] >> 1) & 0x03
+            br_index = (data[pos + 2] >> 4) & 0x0F
+            sr_index = (data[pos + 2] >> 2) & 0x03
+            if version is None or layer != 1 or not 0 < br_index < 15 or sr_index == 3:
+                pos += 1
+                continue
+            bitrate = bitrates[1 if version == 1 else 2][br_index] * 1000
+            sample_rate = sample_rates[version][sr_index]
+            padding = (data[pos + 2] >> 1) & 0x01
+            samples = 1152 if version == 1 else 576
+            frame_size = (samples // 8) * bitrate // sample_rate + padding
+            if frame_size <= 4:
+                pos += 1
+                continue
+            total_ms += samples / sample_rate * 1000
+            frames += 1
+            pos += frame_size
+        return int(total_ms) if frames else 0
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _wav_duration_ms(path: str) -> int:
