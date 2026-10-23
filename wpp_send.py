@@ -581,11 +581,27 @@ async def _send_video(
 async def _send_record(
     api: WppClient, to_wxid: str, comp: Record, account_id: str
 ) -> dict[str, Any]:
+    # TTS 回复会带上原文 (Record.text)。语音发不出去时降级发文字，
+    # 而不是让整条回复静默丢失；转发/用户语音没有原文，仍走文件或报错。
+    fallback_text = str(getattr(comp, "text", "") or "").strip()
+
+    async def _fallback(reason: str) -> dict[str, Any] | None:
+        if not fallback_text:
+            return None
+        try:
+            await api.send_text(to_wxid, fallback_text)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[WPP:{account_id}] {reason}; 文字降级也失败: {e}")
+            return _one_result(False, f"send_voice fallback text: {e}")
+        logger.info(f"[WPP:{account_id}] {reason}; 已降级发送文字")
+        return _one_result(True)
+
     try:
         path = await comp.convert_to_file_path()
         data = await _read_bytes(path)
         if data is None:
-            return _one_result(False, "send_voice: unreadable")
+            fb = await _fallback("语音文件不可读")
+            return fb or _one_result(False, "send_voice: unreadable")
         ext = os.path.splitext(path)[1].lower()
         type_map = {".amr": 0, ".speex": 1, ".mp3": 2, ".wav": 3, ".silk": 4}
         fmt = type_map.get(ext, 3)
@@ -611,6 +627,11 @@ async def _send_record(
                 )
             return _one_result(True)
         if len(data) > VOICE_MAX_BYTES:
+            fb = await _fallback(
+                f"语音 {len(data)}B 超过 vendor 64,500B 限制且无法转 SILK"
+            )
+            if fb is not None:
+                return fb
             logger.warning(
                 f"[WPP:{account_id}] 语音 {len(data)}B 超过 vendor 64,500B 限制且无法转 "
                 f"SILK, 降级为文件: {path}"
@@ -620,6 +641,9 @@ async def _send_record(
         await api.send_voice(to_wxid, data, fmt_type=fmt, voice_time_ms=voice_time)
         return _one_result(True)
     except Exception as e:  # noqa: BLE001
+        fb = await _fallback(f"send_voice failed: {e}")
+        if fb is not None:
+            return fb
         logger.warning(f"[WPP:{account_id}] send_voice failed: {e}")
         return _one_result(False, f"send_voice: {e}")
 
