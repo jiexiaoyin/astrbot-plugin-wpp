@@ -37,15 +37,15 @@ TEXT_CHUNK_LIMIT = 6000
 # 引用回复气泡文本上限 (wpp-openclaw buildQuoteReplyXml 取 500)
 QUOTE_TEXT_LIMIT = 500
 MAX_MEDIA_SEND_BYTES = 100 * 1024 * 1024
-# vendor /Msg/SendVoice 对 Base64 解码后的语音 payload > 64KiB 直接返回
-# Code=-2（实测 64744B 成功 / 65580B 失败，与格式无关）
-VOICE_MAX_BYTES = 64 * 1024
+# vendor /Msg/SendVoice 对 Base64 解码后的语音 payload 有硬上限, 实测阈值约
+# 65,000B (64,974B 成功 / 65,180B 失败, 失败响应里 Offset=65000), 与格式无关。
+# 取 64,500 留余量, 避免卡在 chunk 边界。
+VOICE_MAX_BYTES = 64_500
 # 微信语音单条上限 60 秒; 超过则自动分段发送
 VOICE_MAX_MS = 60_000
-# 微信播放端只认 SILK 24kbps 固定码率, 降码率会无声; 因此容量靠缩短分段解决:
-# 24kbps ≈ 3KB/s, 20s 约 60KB, 留出 64KiB 余量
-SILK_BIT_RATE = 24_000
-SILK_MAX_SEGMENT_MS = 20_000
+# SILK 码率阶梯: 微信/厂商实测 6k~24kbps 均可正常播放, 按容量从高到低选,
+# 让 ≤60s 的分段尽量以高码率发进 vendor 的 64,500B payload 上限
+SILK_BIT_RATES = (24_000, 16_000, 12_000, 10_000, 9_000, 8_000, 6_000)
 
 
 # --------------------------------------------------------------------------- 分片
@@ -595,14 +595,15 @@ async def _send_record(
             logger.warning(
                 f"[WPP:{account_id}] 无法获取语音时长, vendor 可能拒发: {path}"
             )
-        # vendor 还对语音 payload > 64KiB 直接返回 Code=-2。统一转微信原生
-        # SILK 24kbps (微信只认此固定码率), 靠分段同时满足 ≤60s 与 ≤64KiB。
+        # vendor 还对语音 payload > 64,500B 直接返回 Code=-2。统一转微信原生
+        # SILK, 单条 ≤60s; 码率按 24k→6k 阶梯选最高的能塞进 64,500B 的
+        # (实测 6k/8k/9k 在微信端均可正常播放)。
         segments = await _encode_silk_segments(path)
         if segments:
             if len(segments) > 1:
                 logger.info(
                     f"[WPP:{account_id}] 语音 {voice_time}ms 分 {len(segments)} 段发送"
-                    f" (SILK 24kbps, 单段 ≤{SILK_MAX_SEGMENT_MS // 1000}s)"
+                    f" (SILK, 单段 ≤{VOICE_MAX_MS // 1000}s)"
                 )
             for silk, seg_ms in segments:
                 await api.send_voice(
@@ -611,7 +612,7 @@ async def _send_record(
             return _one_result(True)
         if len(data) > VOICE_MAX_BYTES:
             logger.warning(
-                f"[WPP:{account_id}] 语音 {len(data)}B 超过 vendor 64KiB 限制且无法转 "
+                f"[WPP:{account_id}] 语音 {len(data)}B 超过 vendor 64,500B 限制且无法转 "
                 f"SILK, 降级为文件: {path}"
             )
             await api.send_file(to_wxid, os.path.basename(path), data)
@@ -624,11 +625,11 @@ async def _send_record(
 
 
 async def _encode_silk_segments(path: str) -> list[tuple[bytes, int]]:
-    """切段并转微信原生 SILK 24kbps (Tencent 标记)。
+    """按 ≤60s 切片并转微信原生 SILK (Tencent 标记)。
 
-    微信播放端只认固定 24kbps, 降码率会无声。容量限制改由缩短分段解决:
-    默认每段 20s (≈60KB, 低于 vendor 64KiB), 且永不超过 60s;
-    若实际编码超限则按 4/5 收缩后重试。
+    每段从 24kbps 起按阶梯降码率, 选第一个 payload ≤64,500B 的;
+    实测 6k/8k/9k 在微信端均可正常播放。若 6kbps 仍超限
+    (极端长段/高熵音频), 按 4/5 收缩分段长度后重试。
     pysilk/ffmpeg 不可用或编码失败时返回空列表, 由调用方走原格式兜底。
     """
     try:
@@ -640,7 +641,7 @@ async def _encode_silk_segments(path: str) -> list[tuple[bytes, int]]:
         return []
     rate = 24000
     total_samples = len(pcm) // 2
-    max_ms = min(VOICE_MAX_MS, SILK_MAX_SEGMENT_MS)
+    max_ms = VOICE_MAX_MS
     while max_ms >= 1000:
         max_samples = rate * max_ms // 1000
         segments: list[tuple[bytes, int]] = []
@@ -650,7 +651,7 @@ async def _encode_silk_segments(path: str) -> list[tuple[bytes, int]]:
             end = min(pos + max_samples, total_samples)
             chunk = pcm[pos * 2 : end * 2]
             seg_ms = int((end - pos) * 1000 / rate)
-            encoded = _silk_encode_chunk(pysilk, chunk)
+            encoded = _silk_encode_fit(pysilk, chunk)
             if encoded is None:
                 ok = False
                 break
@@ -659,34 +660,35 @@ async def _encode_silk_segments(path: str) -> list[tuple[bytes, int]]:
         if ok:
             return segments
         logger.warning(
-            f"[WPP] SILK 分段 {max_ms}ms 编码超 64KiB, 收缩分段后重试"
+            f"[WPP] SILK 分段 {max_ms}ms 在 6kbps 下仍超 64,500B, 收缩分段后重试"
         )
         max_ms = max_ms * 4 // 5
     logger.warning("[WPP] SILK 分段编码失败, 放弃 SILK")
     return []
 
 
-def _silk_encode_chunk(pysilk: Any, pcm: bytes) -> bytes | None:
-    """按微信固定码率 24kbps 编码一段 PCM, 超过 64KiB 返回 None。"""
-    out = io.BytesIO()
-    try:
-        pysilk.encode(
-            io.BytesIO(pcm),
-            out,
-            24000,
-            SILK_BIT_RATE,
-            24000,
-            0,
-            2,
-            False,
-            False,
-            True,
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    data = out.getvalue()
-    if data and len(data) <= VOICE_MAX_BYTES:
-        return data
+def _silk_encode_fit(pysilk: Any, pcm: bytes) -> bytes | None:
+    """从高到低尝试码率, 返回第一个 ≤64,500B 的 SILK payload。"""
+    for bit_rate in SILK_BIT_RATES:
+        out = io.BytesIO()
+        try:
+            pysilk.encode(
+                io.BytesIO(pcm),
+                out,
+                24000,
+                bit_rate,
+                24000,
+                0,
+                2,
+                False,
+                False,
+                True,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        data = out.getvalue()
+        if data and len(data) <= VOICE_MAX_BYTES:
+            return data
     return None
 
 
