@@ -40,6 +40,12 @@ MAX_MEDIA_SEND_BYTES = 100 * 1024 * 1024
 # vendor /Msg/SendVoice 对 Base64 解码后的语音 payload > 64KiB 直接返回
 # Code=-2（实测 64744B 成功 / 65580B 失败，与格式无关）
 VOICE_MAX_BYTES = 64 * 1024
+# 微信语音单条上限 60 秒; 超过则自动分段发送
+VOICE_MAX_MS = 60_000
+# 微信播放端只认 SILK 24kbps 固定码率, 降码率会无声; 因此容量靠缩短分段解决:
+# 24kbps ≈ 3KB/s, 20s 约 60KB, 留出 64KiB 余量
+SILK_BIT_RATE = 24_000
+SILK_MAX_SEGMENT_MS = 20_000
 
 
 # --------------------------------------------------------------------------- 分片
@@ -590,12 +596,18 @@ async def _send_record(
                 f"[WPP:{account_id}] 无法获取语音时长, vendor 可能拒发: {path}"
             )
         # vendor 还对语音 payload > 64KiB 直接返回 Code=-2。统一转微信原生
-        # SILK (按容量自动降码率) 最稳; 不能转时原格式 < 64KiB 才发语音。
-        silk = await _encode_silk_voice(path)
-        if silk is not None:
-            await api.send_voice(
-                to_wxid, silk, fmt_type=4, voice_time_ms=voice_time
-            )
+        # SILK 24kbps (微信只认此固定码率), 靠分段同时满足 ≤60s 与 ≤64KiB。
+        segments = await _encode_silk_segments(path)
+        if segments:
+            if len(segments) > 1:
+                logger.info(
+                    f"[WPP:{account_id}] 语音 {voice_time}ms 分 {len(segments)} 段发送"
+                    f" (SILK 24kbps, 单段 ≤{SILK_MAX_SEGMENT_MS // 1000}s)"
+                )
+            for silk, seg_ms in segments:
+                await api.send_voice(
+                    to_wxid, silk, fmt_type=4, voice_time_ms=seg_ms
+                )
             return _one_result(True)
         if len(data) > VOICE_MAX_BYTES:
             logger.warning(
@@ -611,39 +623,70 @@ async def _send_record(
         return _one_result(False, f"send_voice: {e}")
 
 
-async def _encode_silk_voice(path: str) -> bytes | None:
-    """转成微信原生 SILK (Tencent 标记), 按容量自动降码率。
+async def _encode_silk_segments(path: str) -> list[tuple[bytes, int]]:
+    """切段并转微信原生 SILK 24kbps (Tencent 标记)。
 
-    vendor 的 64KiB 上限让 64kbps mp3 只能发 ~8 秒; SILK 同样音量下约
-    1/4 大小。pysilk 或 ffmpeg 不可用时返回 None, 由调用方走原格式兜底。
+    微信播放端只认固定 24kbps, 降码率会无声。容量限制改由缩短分段解决:
+    默认每段 20s (≈60KB, 低于 vendor 64KiB), 且永不超过 60s;
+    若实际编码超限则按 4/5 收缩后重试。
+    pysilk/ffmpeg 不可用或编码失败时返回空列表, 由调用方走原格式兜底。
     """
     try:
         import pysilk
     except ImportError:
-        return None
+        return []
     pcm = await _decode_pcm_24k(path)
     if not pcm:
+        return []
+    rate = 24000
+    total_samples = len(pcm) // 2
+    max_ms = min(VOICE_MAX_MS, SILK_MAX_SEGMENT_MS)
+    while max_ms >= 1000:
+        max_samples = rate * max_ms // 1000
+        segments: list[tuple[bytes, int]] = []
+        pos = 0
+        ok = True
+        while pos < total_samples:
+            end = min(pos + max_samples, total_samples)
+            chunk = pcm[pos * 2 : end * 2]
+            seg_ms = int((end - pos) * 1000 / rate)
+            encoded = _silk_encode_chunk(pysilk, chunk)
+            if encoded is None:
+                ok = False
+                break
+            segments.append((encoded, seg_ms))
+            pos = end
+        if ok:
+            return segments
+        logger.warning(
+            f"[WPP] SILK 分段 {max_ms}ms 编码超 64KiB, 收缩分段后重试"
+        )
+        max_ms = max_ms * 4 // 5
+    logger.warning("[WPP] SILK 分段编码失败, 放弃 SILK")
+    return []
+
+
+def _silk_encode_chunk(pysilk: Any, pcm: bytes) -> bytes | None:
+    """按微信固定码率 24kbps 编码一段 PCM, 超过 64KiB 返回 None。"""
+    out = io.BytesIO()
+    try:
+        pysilk.encode(
+            io.BytesIO(pcm),
+            out,
+            24000,
+            SILK_BIT_RATE,
+            24000,
+            0,
+            2,
+            False,
+            False,
+            True,
+        )
+    except Exception:  # noqa: BLE001
         return None
-    for bit_rate in (24000, 16000, 12000, 8000):
-        out = io.BytesIO()
-        try:
-            pysilk.encode(
-                io.BytesIO(pcm),
-                out,
-                24000,
-                bit_rate,
-                24000,
-                0,
-                2,
-                False,
-                False,
-                True,
-            )
-        except Exception:  # noqa: BLE001
-            continue
-        data = out.getvalue()
-        if data and len(data) <= VOICE_MAX_BYTES:
-            return data
+    data = out.getvalue()
+    if data and len(data) <= VOICE_MAX_BYTES:
+        return data
     return None
 
 
