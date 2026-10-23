@@ -412,23 +412,20 @@ class TestStorage(unittest.TestCase):
                 raw = json.loads(store.config_path.read_text(encoding="utf-8"))
                 self.assertEqual(raw["group_reply"], "all")
 
-    def test_legacy_config_migrated(self):
+    def test_legacy_source_dir_is_not_read(self):
+        """运行时数据只认 data/plugin_data, 不再读取插件源码目录。"""
         with tempfile.TemporaryDirectory() as d:
-            legacy = Path(d) / "legacy"
-            legacy_acct = legacy / "acct_old"
+            plugin_dir = Path(d) / "plugin"
+            legacy_acct = plugin_dir / "accounts" / "acct_old"
             legacy_acct.mkdir(parents=True)
             (legacy_acct / "wpp_whitelist.json").write_text(
                 json.dumps({"allow_users": ["u1"], "group_reply": "none"}),
                 encoding="utf-8",
             )
-            with (
-                patch.object(storage, "plugin_data_dir", return_value=Path(d) / "new"),
-                patch.object(storage, "legacy_accounts_dir", return_value=legacy),
-            ):
+            with patch.object(storage, "plugin_data_dir", return_value=Path(d) / "new"):
                 store = storage.AccountStore("acct_old")
-                cfg = store.load_config()
-                self.assertEqual(cfg["allow_users"], ["u1"])
-                self.assertTrue(store.config_path.exists())
+                self.assertEqual(store.load_config(), {})
+                self.assertFalse(store.config_path.exists())
 
     def test_members_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:

@@ -8,8 +8,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
+from pathlib import Path
 from typing import Any
 
 from astrbot import logger
@@ -79,15 +81,15 @@ async def enrich_media(
         prefix = _non_media_prefix(msg)
         if path:
             try:
-                with open(path, "rb") as f:
-                    msg.message = prefix + [Image.fromBytes(f.read())]
+                data = await asyncio.to_thread(Path(path).read_bytes)
+                msg.message = prefix + [Image.fromBytes(data)]
                 msg.message_str = "[图片]"
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[WPP] 读取下载图片失败: {e}")
                 msg.message = prefix + [Plain("[图片下载失败]")]
                 msg.message_str = "[图片下载失败]"
             finally:
-                _unlink(path)
+                await asyncio.to_thread(_unlink, path)
         else:
             msg.message = prefix + [Plain("[图片下载失败]")]
             msg.message_str = "[图片下载失败]"
@@ -103,8 +105,7 @@ async def enrich_media(
             if data:
                 fname = str(file_meta.get("filename") or "file")
                 path = _temp_path("file", _safe_ext(fname))
-                with open(path, "wb") as f:
-                    f.write(data)
+                await asyncio.to_thread(Path(path).write_bytes, data)
                 temp_files.append(path)
                 hint = _skill_hint(_safe_ext(fname))
                 msg.message_str = f"[文件] {fname}"
@@ -139,8 +140,7 @@ async def enrich_media(
             )
             if data:
                 path = _temp_path("voice", ".silk")
-                with open(path, "wb") as f:
-                    f.write(data)
+                await asyncio.to_thread(Path(path).write_bytes, data)
                 temp_files.append(path)
                 msg.message_str = "[语音]"
                 msg.message = _non_media_prefix(msg) + [Record(file=path)]
@@ -164,8 +164,7 @@ async def enrich_media(
             )
             if data:
                 path = _temp_path("video", ".mp4")
-                with open(path, "wb") as f:
-                    f.write(data)
+                await asyncio.to_thread(Path(path).write_bytes, data)
                 temp_files.append(path)
                 msg.message_str = "[视频]"
                 msg.message = _non_media_prefix(msg) + [
@@ -202,8 +201,7 @@ async def _download_image(api: WppClient, meta: dict) -> str | None:
         logger.warning(f"[WPP] 图片过大, 跳过: {len(data)} bytes")
         return None
     path = _temp_path("image", ".jpg")
-    with open(path, "wb") as f:
-        f.write(data)
+    await asyncio.to_thread(Path(path).write_bytes, data)
     return path
 
 

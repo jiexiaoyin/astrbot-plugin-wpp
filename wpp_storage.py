@@ -8,7 +8,7 @@ AstrBot 插件规范: 运行时数据放 `data/plugin_data/<plugin_name>/`, 不�
   data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/dedup.json
   data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/members.json  (v0.9.0 群成员基线)
 
-兼容: 旧版本把白名单写在插件目录 `accounts/<account_id>/`, 读取时自动回退并迁移到新目录。
+不在插件源码目录下保留任何读写兜底；AstrBot 插件更新/重装会覆盖源码目录。
 """
 
 from __future__ import annotations
@@ -34,18 +34,10 @@ def safe_account_id(account_id: str) -> str:
 
 
 def plugin_data_dir() -> Path:
-    """插件数据目录 (兼容旧版 AstrBot / 测试环境)。"""
-    try:
-        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+    """插件数据目录 (AstrBot 规范的 data/plugin_data/<plugin_name>)。"""
+    from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
-        return Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
-    except Exception:  # noqa: BLE001
-        return Path(__file__).resolve().parent / "data" / "plugin_data"
-
-
-def legacy_accounts_dir() -> Path:
-    """旧版数据目录 (插件源码目录下的 accounts/)。"""
-    return Path(__file__).resolve().parent / "accounts"
+    return Path(get_astrbot_plugin_data_path()) / PLUGIN_NAME
 
 
 class AccountStore:
@@ -58,30 +50,22 @@ class AccountStore:
         self.config_path = self.dir / "wpp_whitelist.json"
         self.dedup_path = self.dir / "dedup.json"
         self.members_path = self.dir / "members.json"
-        self._legacy_dir = legacy_accounts_dir() / self.account_id
 
     # ------------------------------------------------------------------ 白名单/策略
     def load_config(self) -> dict:
-        """读取账号配置; 新目录没有时回退旧目录 (并迁移)。"""
+        """读取账号配置; 文件缺失/损坏返回空配置。"""
         data = self._read_json(self.config_path)
-        if data is None:
-            legacy = self._read_json(self._legacy_dir / "wpp_whitelist.json")
-            if isinstance(legacy, dict):
-                logger.info(f"[WPP:{self.account_id}] 迁移旧白名单文件 → {self.config_path}")
-                self.save_config(legacy)
-                return legacy
         return data if isinstance(data, dict) else {}
 
     def save_config(self, data: dict) -> None:
         self._atomic_write(self.config_path, json.dumps(data, ensure_ascii=False, indent=2))
 
     def config_mtime(self) -> float:
-        for p in (self.config_path, self._legacy_dir / "wpp_whitelist.json"):
-            try:
-                if p.exists():
-                    return p.stat().st_mtime
-            except OSError:
-                continue
+        try:
+            if self.config_path.exists():
+                return self.config_path.stat().st_mtime
+        except OSError:
+            pass
         return 0.0
 
     # ------------------------------------------------------------------ 去重
@@ -145,7 +129,6 @@ class AccountStore:
 __all__ = [
     "PLUGIN_NAME",
     "plugin_data_dir",
-    "legacy_accounts_dir",
     "safe_account_id",
     "AccountStore",
 ]

@@ -34,26 +34,10 @@ from astrbot.api.platform import (
     register_platform_adapter,
 )
 
-# 抑制第三方库的 DEBUG 噪音日志。
-# AstrBot v4 把 root logger 强制设为 DEBUG, 且只压了 aiosqlite/filelock/asyncio/tzlocal/apscheduler,
-# 漏压了 websockets (WPP 插件 WS 客户端) 和 httpcore (HTTP 调用)。
-# 这些库的 DEBUG 会在每次 WS PING/PONG/TEXT 帧和 HTTP 请求时刷屏, 严重影响可读性。
-# 局部修复: 在插件加载时把相关 logger 压到 WARNING (只影响第三方库, 不影响 AstrBot/插件自身 logger)。
-import logging as _logging
-
-for _noisy in (
-    "websockets",
-    "websockets.client",
-    "websockets.protocol",
-    "httpcore",
-    "httpcore._trace",
-):
-    _logging.getLogger(_noisy).setLevel(_logging.WARNING)
-
 from astrbot.core.platform.message_session import MessageSession
 
 from .wpp_account import WppAccount
-from .wpp_constants import PLATFORM_NAME
+from .wpp_constants import PLATFORM_DISPLAY_NAME, PLATFORM_NAME
 from .wpp_event import WppMessageEvent
 from .wpp_heartflow import (
     HEARTFLOW_WHITELIST_MODES,
@@ -104,7 +88,7 @@ def _parse_account(platform_config: dict) -> dict | None:
     if str(platform_config.get("wpp_accounts", "") or "").strip():
         logger.warning(
             "[WPP] wpp_accounts 多账号配置已移除：一个平台实例只能对应一个 "
-            "authcode/微信账号。请为每个账号各添加一个「微信 WPP」平台实例，"
+            "authcode/微信账号。请为每个账号各添加一个「个人微信（Pad协议）」平台实例，"
             "id 唯一并分别填写 wpp_auth_token。"
         )
 
@@ -141,7 +125,7 @@ WPP_CONFIG_METADATA = {
         "description": "微信访问凭证 (X-Access-Token = authcode)",
         "type": "string",
         "secret": True,
-        "hint": "一个平台实例只能填一个 authcode，对应一个微信账号。多账号请再添加一个「微信 WPP」平台实例，id 唯一、各自填 authcode。",
+        "hint": "一个平台实例只能填一个 authcode，对应一个微信账号。多账号请再添加一个「个人微信（Pad协议）」平台实例，id 唯一、各自填 authcode。",
     },
     "wpp_allow_users": {
         "description": "白名单 wxid / 群ID (逗号分隔)",
@@ -219,7 +203,7 @@ WPP_CONFIG_METADATA = {
 @register_platform_adapter(
     PLATFORM_NAME,
     "个人微信（Pad协议）适配器 (WeChatPadPro)",
-    adapter_display_name=PLATFORM_NAME,
+    adapter_display_name=PLATFORM_DISPLAY_NAME,
     logo_path="logo.png",
     support_streaming_message=False,
     default_config_tmpl={
@@ -302,9 +286,9 @@ class WppPlatformAdapter(Platform):
         # 缓存平台元数据 (AstrBot 每条消息都会取, 不要每次重建)
         self.metadata = PlatformMetadata(
             name=PLATFORM_NAME,
-            description="个人微信（Pad协议）适配器 (WeChatPadPro)",
+            description=f"{PLATFORM_DISPLAY_NAME}适配器 (WeChatPadPro)",
             id=self.instance_id,
-            adapter_display_name=PLATFORM_NAME,
+            adapter_display_name=PLATFORM_DISPLAY_NAME,
             logo_path="logo.png",
             # WPP 不支持流式消息 (vendor 无消息编辑能力)
             support_streaming_message=False,
@@ -358,6 +342,7 @@ class WppPlatformAdapter(Platform):
         self._runner = None
         self._server = None
         self._status_task: asyncio.Task | None = None
+        self._shutdown_event: asyncio.Event | None = None
 
     # ------------------------------------------------------------------ Platform
     def meta(self) -> PlatformMetadata:
@@ -384,7 +369,7 @@ class WppPlatformAdapter(Platform):
         stats = super().get_stats()
         stats["accounts"] = [self.account.stats] if self.account else []
         if self.account:
-            stats["meta"]["description"] = f"微信 WPP · {self.account.account_id}"
+            stats["meta"]["description"] = f"{PLATFORM_DISPLAY_NAME} · {self.account.account_id}"
         return stats
 
     # ------------------------------------------------------------------ 生命周期
@@ -406,6 +391,7 @@ class WppPlatformAdapter(Platform):
                 "一个 authcode 对应一个微信账号，只能由一个实例轮询"
             )
         self._ACTIVE_AUTHCODES[fp] = self.instance_id
+        self._shutdown_event = asyncio.Event()
         try:
             # ① 确认在线 + 刷新身份 + 启动 worker/WS/维护循环
             try:
@@ -424,9 +410,12 @@ class WppPlatformAdapter(Platform):
 
             # ④ 启动时同步 Heartflow 白名单 (此时各插件均已加载)
             self.sync_heartflow_whitelist("startup")
-        except BaseException:
-            self._ACTIVE_AUTHCODES.pop(fp, None)
-            raise
+
+            # ⑤ 持有平台主任务直到 terminate(); 后台任务异常不会让 run 提前退出。
+            await self._shutdown_event.wait()
+        finally:
+            if self._ACTIVE_AUTHCODES.get(fp) == self.instance_id:
+                self._ACTIVE_AUTHCODES.pop(fp, None)
 
     def sync_heartflow_whitelist(self, reason: str = "") -> None:
         """把本实例所有账号的群白名单/主动候选群同步给 Heartflow。
@@ -609,6 +598,8 @@ class WppPlatformAdapter(Platform):
 
     async def terminate(self) -> None:
         """清理: 账号 WS/worker + 状态循环 + webhook server + authcode 锁。"""
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
         try:
             if self._status_task:
                 self._status_task.cancel()

@@ -1,8 +1,8 @@
 """平台标识常量。
 
-AstrBot 4.29 Dashboard 的机器人列表/新增下拉直接显示适配器注册名和配置
-`id`/`type`，因此这三处必须使用同一个平台名称。
+AstrBot 的平台适配器 `name` / 配置 `type` 是技术标识，必须保持 ASCII
+（如 `aiocqhttp`、`discord`）；Dashboard 展示用 `adapter_display_name`。
 """
 
-PLATFORM_NAME = "个人微信（Pad协议）"
-LEGACY_PLATFORM_NAME = "wpp"
+PLATFORM_NAME = "wpp"
+PLATFORM_DISPLAY_NAME = "个人微信（Pad协议）"

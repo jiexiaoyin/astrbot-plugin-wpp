@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.12.0 (2026-10-23) — 平台技术名恢复 `wpp`，页面合并与规范修正
+
+### 变更
+- **平台技术名改回 `wpp`**：`PlatformMetadata.name`、配置 `type` 与默认 `id`
+  恢复为 ASCII `wpp`；Dashboard 展示名继续由 `adapter_display_name` 提供为
+  「个人微信（Pad协议）」。升级需同步迁移平台配置、DB UMO/会话/统计/偏好、
+  Heartflow 白名单与运行时目录，步骤见 [DEPLOY.md](DEPLOY.md)。
+- **控制台与账号诊断合并为一个页面**：`pages/console` 内新增「策略」/「账号诊断」
+  tab，`pages/diagnostics` 删除。此前诊断页跳转依赖跨页面 token，AstrBot 的
+  view token 按页面签发，跳转会 401。页面显示名改为 **WeChatPad Control Center**。
+- **移除插件源码目录存储兜底**：不再读写插件目录下的 `accounts/`、`data/`，
+  运行时数据只写 AstrBot 标准插件数据目录；旧残留备份后可删除。
+
+### 修复
+- `run()` 生命周期：启动完成后等待 `terminate()` 触发的 shutdown 事件，
+  run 不再立即返回；配合平台管理器的 terminate 顺序干净退出。
+- 不再在导入时修改 `websockets`/`httpcore` 全局 logger 级别；只为 WPP 自己的
+  WS 连接传入 `logger=`，不影响其他插件日志。
+- 媒体与发送路径的阻塞文件 I/O（读、写、unlink、大小/时长探测）改用
+  `asyncio.to_thread`，避免阻塞事件循环。
+- 测试同步断言 `meta.name == "wpp"`、显示名，以及旧源码目录不再被读取。
+
 ## v0.11.7 (2026-10-23) — 开发规范审计修正
 
 ### 修复

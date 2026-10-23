@@ -505,15 +505,19 @@ async def _send_image(api: WppClient, to_wxid: str, comp: Image, account_id: str
 
 async def _read_bytes(path: str) -> bytes | None:
     try:
-        size = os.path.getsize(path)
+        size = await asyncio.to_thread(os.path.getsize, path)
     except OSError:
         return None
     if size > MAX_MEDIA_SEND_BYTES:
         logger.warning(f"[WPP] 媒体文件过大, 跳过发送: {size} bytes")
         return None
-    try:
+
+    def _read() -> bytes:
         with open(path, "rb") as f:
             return f.read()
+
+    try:
+        return await asyncio.to_thread(_read)
     except OSError as e:
         logger.warning(f"[WPP] 读取待发送媒体失败: {e}")
         return None
@@ -706,14 +710,14 @@ async def _decode_pcm_24k(path: str) -> bytes:
 async def _audio_duration_ms(path: str, ext: str) -> int:
     """拿语音时长 (毫秒)。ffprobe 优先, wav/mp3 有内置兜底。"""
     if ext == ".wav":
-        ms = _wav_duration_ms(path)
+        ms = await asyncio.to_thread(_wav_duration_ms, path)
         if ms > 0:
             return ms
     ms = await _ffprobe_duration_ms(path)
     if ms > 0:
         return ms
     if ext == ".mp3":
-        return _mp3_duration_ms(path)
+        return await asyncio.to_thread(_mp3_duration_ms, path)
     return 0
 
 

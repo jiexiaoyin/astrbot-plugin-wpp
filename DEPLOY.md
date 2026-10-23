@@ -59,12 +59,12 @@ docker restart astrbot
 
 ### 多账号（多个平台实例）
 **一个平台实例 = 一个 `wpp_auth_token` = 一个微信账号。** Dashboard 里再添加一个
-「个人微信（Pad协议）」平台实例，`id` 唯一（如 `个人微信（Pad协议）-shop2`），
+「个人微信（Pad协议）」平台实例，`id` 唯一（如 `wpp-shop2`），
 `wpp_auth_token` 填另一个账号：
 
 ```text
-平台实例 个人微信（Pad协议）          (authcode A) ── 微信账号 A
-平台实例 个人微信（Pad协议）-shop2    (authcode B) ── 微信账号 B
+平台实例 个人微信（Pad协议）  id=wpp        (authcode A) ── 微信账号 A
+平台实例 个人微信（Pad协议）  id=wpp-shop2  (authcode B) ── 微信账号 B
 ```
 
 同一个 authcode 不允许配到两个实例：后启动的实例会被拒绝
@@ -102,65 +102,86 @@ WPP 群白名单会自动同步到 Heartflow 的 `chat_whitelist`，有两种来
 - 账号登录后若 `online=false`，插件会自动调 AutoHeartBeat 拉上线
 - **WS 主通道**：连接建立即拉全量离线 + 实时消息；自动重连（指数退避 1s→30s），无需额外保活
 
-## v0.11.0 显示名迁移（`wpp` → `个人微信（Pad协议）`）
+## v0.12.0 平台技术名迁回 `wpp`
 
-AstrBot 4.29 的机器人列表标题显示配置 `id`、副标题显示 `type`，新增下拉显示
-适配器注册名，因此三处必须统一。升级到 v0.11.0 时按以下顺序迁移（先停容器，
-避免运行中的实例把旧配置写回）：
+v0.11.0 曾把平台配置 `type`/`id` 改成中文「个人微信（Pad协议）」，这不符合
+AstrBot 对平台技术标识保持 ASCII 的约定（参照 `aiocqhttp`、`discord`）。
+v0.12.0 起 `type` 与默认 `id` 恢复为 `wpp`，Dashboard 展示名仍由
+`adapter_display_name` 提供为「个人微信（Pad协议）」。升级前先停容器，
+按以下顺序迁移（含 v0.11.x 运行时目录与插件目录残留清理）：
 
 ```bash
 docker stop astrbot
 DATA=/opt/1panel/apps/astrbot/astrbot/data
+TS=$(date +%Y%m%d-%H%M%S)
+BK="/data/astrbot-wpp-v012-migration-$TS"
+mkdir -p "$BK"
 
-# 1. 备份配置/数据库/Heartflow/插件数据
-cp "$DATA/cmd_config.json" "/data/astrbot-cmd_config-$(date +%Y%m%d-%H%M%S).json"
-cp "$DATA/data_v4.db" "/data/astrbot-data_v4-$(date +%Y%m%d-%H%M%S).db"
-cp "$DATA/config/astrbot_plugin_Heartflow_config.json" "/data/astrbot-Heartflow-$(date +%Y%m%d-%H%M%S).json"
-cp -a "$DATA/plugin_data/astrbot-plugin-wpp" "/data/astrbot-wpp-plugin-data-$(date +%Y%m%d-%H%M%S)"
+# 1. 备份配置/数据库(含 WAL/SHM)/Heartflow/插件数据/插件目录残留
+cp "$DATA/cmd_config.json" "$BK/"
+cp "$DATA/data_v4.db"* "$BK/"
+cp "$DATA/config/astrbot_plugin_Heartflow_config.json" "$BK/"
+cp -a "$DATA/plugin_data/astrbot-plugin-wpp" "$BK/plugin-data"
+cp -a "$DATA/plugins/astrbot-plugin-wpp/accounts" "$BK/plugin-dir-accounts" 2>/dev/null || true
+cp -a "$DATA/plugins/astrbot-plugin-wpp/data" "$BK/plugin-dir-data" 2>/dev/null || true
 ```
 
-2. 把 `cmd_config.json` 中该平台对象的 `type`/`id` 从 `wpp` 改为
-   `个人微信（Pad协议）`（保留 UTF-8 BOM，建议用 Python 脚本读改写）。
-3. 迁移数据库 UMO/统计/会话/偏好（下面的 SQL 以 `sqlite3` 为例；字符串含中文，
-   用 Python `sqlite3` 执行更稳妥）：
+2. 把 `cmd_config.json` 中该平台对象的 `type` 从 `个人微信（Pad协议）` 改为
+   `wpp`；`id` 同步改回 `wpp`（多实例按自定义 ASCII id 命名，如
+   `个人微信（Pad协议）-shop2` → `wpp-shop2`）。保留 UTF-8 BOM，建议用
+   Python 脚本读改写。
+3. 迁移数据库 UMO/统计/会话/偏好（字符串含中文，用 Python `sqlite3` 执行）：
 
 ```sql
-UPDATE platform_stats SET platform_id='个人微信（Pad协议）' WHERE platform_id='wpp';
-UPDATE provider_stats SET umo='个人微信（Pad协议）:' || substr(umo, 5) WHERE umo LIKE 'wpp:%';
-UPDATE conversations SET platform_id='个人微信（Pad协议）' WHERE platform_id='wpp';
-UPDATE conversations SET user_id='个人微信（Pad协议）:' || substr(user_id, 5) WHERE user_id LIKE 'wpp:%';
-UPDATE preferences SET scope_id='个人微信（Pad协议）:' || substr(scope_id, 5) WHERE scope_id LIKE 'wpp:%';
-UPDATE umo_aliases SET umo='个人微信（Pad协议）:' || substr(umo, 5) WHERE umo LIKE 'wpp:%';
+UPDATE platform_stats SET platform_id='wpp' WHERE platform_id='个人微信（Pad协议）';
+UPDATE provider_stats SET umo=replace(umo, '个人微信（Pad协议）:', 'wpp:') WHERE umo LIKE '个人微信（Pad协议）:%';
+UPDATE conversations SET platform_id='wpp' WHERE platform_id='个人微信（Pad协议）';
+UPDATE conversations SET user_id=replace(user_id, '个人微信（Pad协议）:', 'wpp:') WHERE user_id LIKE '个人微信（Pad协议）:%';
+UPDATE preferences SET scope_id=replace(scope_id, '个人微信（Pad协议）:', 'wpp:') WHERE scope_id LIKE '个人微信（Pad协议）:%';
+UPDATE umo_aliases SET umo=replace(umo, '个人微信（Pad协议）:', 'wpp:') WHERE umo LIKE '个人微信（Pad协议）:%';
 -- 会话内容里模型工具回显的 UMO
-UPDATE conversations SET content=replace(content, 'wpp:FriendMessage:', '个人微信（Pad协议）:FriendMessage:');
-UPDATE conversations SET content=replace(content, 'wpp:GroupMessage:', '个人微信（Pad协议）:GroupMessage:');
+UPDATE conversations SET content=replace(content, '个人微信（Pad协议）:FriendMessage:', 'wpp:FriendMessage:');
+UPDATE conversations SET content=replace(content, '个人微信（Pad协议）:GroupMessage:', 'wpp:GroupMessage:');
 ```
 
 `preferences` 中键为 `umop_config_routing` 的全局值若是
-`{"val":{"wpp:*:*":"default"}}`，需把键改成 `个人微信（Pad协议）:*:*`。
+`{"val":{"个人微信（Pad协议）:*:*":"default"}}`，需把键改回 `wpp:*:*`。
 
-4. Heartflow 配置里 `chat_whitelist` 的 `wpp:GroupMessage:*` 改成
-   `个人微信（Pad协议）:GroupMessage:*`（同步逻辑只替换当前平台前缀，
-   旧前缀不清理会残留）。
-5. 插件运行时目录按实例 id 净化命名：`个人微信（Pad协议）` → `accounts/Pad/`。
-   把 `$DATA/plugin_data/astrbot-plugin-wpp/accounts/wpp/` 改名为
-   `accounts/Pad/`；`webhooks/wpp.token` 可改名为 `webhooks/Pad.token`
+4. Heartflow 配置里 `chat_whitelist` 的 `个人微信（Pad协议）:GroupMessage:*`
+   改回 `wpp:GroupMessage:*`（同步逻辑只替换当前平台前缀，旧前缀不清理会残留）。
+5. 运行时目录：v0.11.x 把实例 id 净化成 `accounts/Pad/`，改回
+   `accounts/wpp/`；`webhooks/Pad.token` 改名为 `webhooks/wpp.token`
    （webhook 已退役，通常可忽略）。
-6. 部署 v0.11.0 代码并启动：
+
+```bash
+PD="$DATA/plugin_data/astrbot-plugin-wpp"
+[ -d "$PD/accounts/Pad" ] && mv "$PD/accounts/Pad" "$PD/accounts/wpp"
+[ -f "$PD/webhooks/Pad.token" ] && mv "$PD/webhooks/Pad.token" "$PD/webhooks/wpp.token"
+```
+
+6. 清理插件源码目录残留（v0.12.0 起不再读取；已在上一步备份）：
+
+```bash
+rm -rf "$DATA/plugins/astrbot-plugin-wpp/accounts" "$DATA/plugins/astrbot-plugin-wpp/data"
+```
+
+7. 部署 v0.12.0 代码并启动：
 
 ```bash
 docker start astrbot
-docker logs --since 3m astrbot 2>&1 | grep -E '个人微信|WPP'
+docker logs --since 3m astrbot 2>&1 | grep -E 'WPP|wpp'
 ```
 
 期望日志：
 
 ```
-Loading IM platform adapter 个人微信（Pad协议）(个人微信（Pad协议）) ...
-[WPP] 账号已注册: id=个人微信（Pad协议） ...
-[WPP:个人微信（Pad协议）] 账号已在线: wxid=...
-[WPP:个人微信（Pad协议） WS] connected
+Loading IM platform adapter wpp (个人微信（Pad协议）) ...
+[WPP] 账号已注册: id=wpp ...
+[WPP:wpp] 账号已在线: wxid=...
+[WPP:wpp WS] connected
 ```
+
+> 历史提示：v0.11.0 的反向迁移（`wpp` → 中文）已废弃，不要重复执行。
 
 ## 开发迭代流程
 

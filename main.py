@@ -99,7 +99,7 @@ class WppPlugin(Star):
     async def web_account_info(self):
         """输入 X-Access-Token, 返回该 token 绑定的微信账号在线状态/wxid。
 
-        前端 Pages: pages/diagnostics/index.html
+        前端 Pages: pages/console/index.html（「账号诊断」tab）
         """
         payload = await request.json(default={})
         payload = payload if isinstance(payload, dict) else {}
@@ -430,7 +430,7 @@ class WppPlugin(Star):
         insts = self._get_wpp_instances()
         if not insts:
             yield event.plain_result(
-                "WPP 适配器未启动。请先在 Dashboard 平台适配器里添加并启动 '微信 WPP'。"
+                "WPP 适配器未启动。请先在 Dashboard 平台适配器里添加并启动「个人微信（Pad协议）」。"
             )
             return
 

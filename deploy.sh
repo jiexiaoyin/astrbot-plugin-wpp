@@ -26,4 +26,4 @@ docker logs --tail 40 "$CONTAINER" 2>&1 | grep -iE "wpp|plugin|adapter|error" ||
 echo ""
 echo "部署完成。如未见 'Platform adapter registered: wpp', 检查:"
 echo "  docker logs astrbot 2>&1 | tail -50"
-echo "  Dashboard http://<host>:6185 → 平台适配器 → 添加 微信 WPP"
+echo "  Dashboard http://<host>:6185 → 平台适配器 → 添加 个人微信（Pad协议）"

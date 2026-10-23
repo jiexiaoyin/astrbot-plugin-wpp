@@ -4,10 +4,7 @@
   },
   "pages": {
     "console": {
-      "title": "WPP 控制台"
-    },
-    "diagnostics": {
-      "title": "WPP 账号诊断"
+      "title": "WeChatPad Control Center"
     }
   }
 }

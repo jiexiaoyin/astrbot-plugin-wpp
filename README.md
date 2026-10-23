@@ -142,7 +142,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
 
 ### 🖥 运维体验
-- **WPP 控制台**（Dashboard → 插件页面 → WPP 控制台）：
+- **WeChatPad Control Center**（Dashboard → 插件页面 → WeChatPad Control Center）：
   - 顶部概览：账号数、在线数、群白名单、生效主动候选、发送成功/失败；
   - 账号卡片：在线徽标、昵称/wxid、队列、发送统计、最近错误；
   - 编辑策略：私聊/群白名单、私聊/群黑名单、显式主动候选、群消息模式、
@@ -158,7 +158,7 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
     Heartflow 模式等仍在 Dashboard → 平台适配器 → 个人微信（Pad协议）配置中修改。
   - 适配器配置里的白名单/群策略字段是账号启动时的初始值；账号保存过策略后，
     以控制台持久化的运行时配置为准。
-- **WPP 账号诊断**：查看已配置账号在线状态，或用 X-Access-Token 查询
+- **账号诊断 tab**（控制台内）：查看已配置账号在线状态，或用 X-Access-Token 查询
   昵称/wxid/地区/签名；Token 仅用于本次请求，不落盘。
 - **在线状态卡片**：平台状态实时显示（多实例聚合）
 - **动态面板地址**：UI 显示实际配置的 vendor 地址（不硬编码）
@@ -281,14 +281,14 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 | `wpp_client.py` | WPP vendor HTTP/WS API 封装 (retry + 超时) |
 | `wpp_event.py` | 消息事件 (重写 send 真正发送到微信) |
 | `tests/` | 单元测试 (pytest, 在 AstrBot 容器内运行) |
-| `pages/console/` | WPP 控制台 (策略编辑/生效预览/Heartflow 同步) |
-| `pages/diagnostics/` | WPP 账号诊断 (在线状态 + Token 查询) |
+| `pages/console/` | WeChatPad Control Center (策略编辑/生效预览/Heartflow 同步 + 账号诊断 tab) |
 | `.astrbot-plugin/i18n/` | Dashboard 页面标题与显示名 (zh-CN / en-US) |
 | `logo.png` | 插件 + 平台适配器图标 |
 
 运行时数据（白名单、去重状态、群成员基线 `members.json`）写在 AstrBot 标准
 插件数据目录：`data/plugin_data/astrbot-plugin-wpp/accounts/<account_id>/`。
-旧版写在插件目录 `accounts/` 下的数据会在启动时自动迁移。
+插件不再读写自身源码目录下的 `accounts/`、`data/`；旧版残留可备份后删除
+（见 [DEPLOY.md](DEPLOY.md)）。
 
 ---
 
@@ -347,7 +347,7 @@ docker exec -w /AstrBot/data/plugins astrbot \
 > `wpp_accounts` 单实例多账号配置；旧配置会告警并被忽略（只使用
 > `wpp_auth_token`）。多账号请拆成多个平台实例。
 >
-> ⚠️ 上表中的白名单/群策略字段是账号启动时的初始值。日常增删白名单、切换群模式请使用 **WPP 控制台**；账号保存过运行时策略后，以控制台写入的 `wpp_whitelist.json` 为准，避免两处配置产生歧义。
+> ⚠️ 上表中的白名单/群策略字段是账号启动时的初始值。日常增删白名单、切换群模式请使用 **WeChatPad Control Center**；账号保存过运行时策略后，以控制台写入的 `wpp_whitelist.json` 为准，避免两处配置产生歧义。
 
 ### 👥 多账号（多个平台实例）
 **一个微信账号 = 一个 authcode = 一个「个人微信（Pad协议）」平台实例。** 多账号时在
@@ -586,9 +586,10 @@ python -m compileall -q .
 升级插件只需替换插件目录并重启 AstrBot；白名单和去重数据保存在
 `data/plugin_data/astrbot-plugin-wpp/`，不会因替换插件文件丢失。
 
-> ⚠️ **v0.11.0 升级**：平台显示名改为 **个人微信（Pad协议）**。已有平台配置的
-> `type`/`id` 需从 `wpp` 改为 `个人微信（Pad协议）`，并同步迁移 UMO、会话/统计/
-> 偏好数据和 Heartflow 白名单；迁移步骤见 [DEPLOY.md](DEPLOY.md)。
+> ⚠️ **v0.12.0 升级**：平台技术名改回 **`wpp`**（显示名仍为「个人微信（Pad协议）」）。
+> 已有平台配置的 `type`/`id` 若为 `个人微信（Pad协议）`，需改回 `wpp`，并同步迁移
+> UMO、会话/统计/偏好数据和 Heartflow 白名单；迁移与残留清理步骤见
+> [DEPLOY.md](DEPLOY.md)。
 >
 > ⚠️ **v0.10.0 升级**：`wpp_accounts` 单实例多账号配置已移除。若旧配置里用了
 > 它，请为每个账号各建一个「个人微信（Pad协议）」平台实例（`id` 唯一、各自填

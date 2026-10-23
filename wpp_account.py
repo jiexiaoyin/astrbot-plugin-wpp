@@ -21,10 +21,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any
 
 from astrbot import logger
+
+# 只压本插件 WS 连接自己的 websockets 日志, 不改动全局第三方 logger。
+_WS_LOGGER = logging.getLogger("astrbot-plugin-wpp.websockets")
+_WS_LOGGER.setLevel(logging.WARNING)
 
 from .wpp_client import WppClient
 from .wpp_commands import FilehelperCommands
@@ -214,6 +219,7 @@ class WppAccount:
                     ping_timeout=20,
                     close_timeout=5,
                     max_size=100 * 1024 * 1024,
+                    logger=_WS_LOGGER,
                 ) as ws:
                     delay = 1.0  # 连接成功重置退避
                     logger.info(f"[WPP:{self.account_id} WS] connected")
