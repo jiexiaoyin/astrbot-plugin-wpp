@@ -9,7 +9,8 @@
   Heartflow 白名单与运行时目录，步骤见 [DEPLOY.md](DEPLOY.md)。
 - **控制台与账号诊断合并为一个页面**：`pages/console` 内新增「策略」/「账号诊断」
   tab，`pages/diagnostics` 删除。此前诊断页跳转依赖跨页面 token，AstrBot 的
-  view token 按页面签发，跳转会 401。页面显示名改为 **WeChatPad Control Center**。
+  view token 按页面签发，跳转会 401。页面显示名改为 **WeChatPad Control Center**，
+  中文环境显示「微信(Pad协议)控制中心」。
 - **移除插件源码目录存储兜底**：不再读写插件目录下的 `accounts/`、`data/`，
   运行时数据只写 AstrBot 标准插件数据目录；旧残留备份后可删除。
 

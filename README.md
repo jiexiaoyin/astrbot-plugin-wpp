@@ -142,7 +142,8 @@ WeChatPadPro vendor（HTTP API + WS `/ws/sync`）。
 - **动态配置**：换 vendor 地址/authcode 自动适配（无硬编码）
 
 ### 🖥 运维体验
-- **WeChatPad Control Center**（Dashboard → 插件页面 → WeChatPad Control Center）：
+- **WeChatPad Control Center**（中文环境显示「微信(Pad协议)控制中心」；
+  Dashboard → 插件页面 → 对应名称）：
   - 顶部概览：账号数、在线数、群白名单、生效主动候选、发送成功/失败；
   - 账号卡片：在线徽标、昵称/wxid、队列、发送统计、最近错误；
   - 编辑策略：私聊/群白名单、私聊/群黑名单、显式主动候选、群消息模式、

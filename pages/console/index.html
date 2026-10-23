@@ -476,6 +476,23 @@
       tabs.forEach((tab) => tab.addEventListener("click", () => activateTab(tab.dataset.tab)));
       activateTab(location.hash === "#diagnostics" ? "diagnostics" : "policy");
 
+      // ---- 页面名称跟随 Dashboard 语言环境 ----
+      (() => {
+        const bridge = window.AstrBotPluginPage;
+        if (!bridge) return;
+        const applyLocale = (ctx) => {
+          const isZh = String(ctx?.locale || "").toLowerCase().startsWith("zh");
+          const name = isZh ? "微信(Pad协议)控制中心" : "WeChatPad Control Center";
+          document.title = name;
+          const heading = document.querySelector(".brand h1");
+          if (heading) heading.textContent = name;
+          const nav = document.querySelector(".tabs");
+          if (nav) nav.setAttribute("aria-label", name);
+        };
+        if (typeof bridge.onContext === "function") bridge.onContext(applyLocale);
+        Promise.resolve(bridge.ready()).then(applyLocale).catch(() => {});
+      })();
+
       // ---- 策略管理 ----
       (async () => {
       const bridge = window.AstrBotPluginPage;
