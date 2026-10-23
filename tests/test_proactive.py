@@ -61,9 +61,7 @@ class TestProactivePolicy(unittest.TestCase):
         self.assertTrue(d.proactive)
         self.assertFalse(d.at_me)
         self.assertEqual(d.reason, "proactive")
-        self.assertEqual(
-            policy.effective_proactive_groups(p), {"g1@chatroom"}
-        )
+        self.assertEqual(policy.effective_proactive_groups(p), {"g1@chatroom"})
 
     def test_private_whitelist_does_not_make_group_proactive(self):
         p = snap(allow_users={"wxid_u"})

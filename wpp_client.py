@@ -40,15 +40,17 @@ GROUP_INFO_TIMEOUT_SECONDS = 8.0
 DEFAULT_SEND_INTERVAL_SECONDS = 0.3
 
 # 这些端点会真正发消息; 统一在 _post 层做同会话串行 + 节流。
-_SEND_ENDPOINTS = frozenset({
-    "/Msg/SendTxt",
-    "/Msg/ShareLink",
-    "/Msg/ShareLocation",
-    "/Msg/UploadImg",
-    "/Msg/SendFile",
-    "/Msg/SendVideo",
-    "/Msg/SendVoice",
-})
+_SEND_ENDPOINTS = frozenset(
+    {
+        "/Msg/SendTxt",
+        "/Msg/ShareLink",
+        "/Msg/ShareLocation",
+        "/Msg/UploadImg",
+        "/Msg/SendFile",
+        "/Msg/SendVideo",
+        "/Msg/SendVoice",
+    }
+)
 
 
 class WppApiError(Exception):
@@ -222,9 +224,7 @@ class WppClient:
             async with lock:
                 await self._pace_send(key)
                 try:
-                    result = await self._post_impl(
-                        endpoint, body, max_retries, retry_safe, timeout
-                    )
+                    result = await self._post_impl(endpoint, body, max_retries, retry_safe, timeout)
                 except Exception as e:  # noqa: BLE001 - 记录后原样抛出
                     self.record_send_result(False, str(e))
                     raise
@@ -248,10 +248,17 @@ class WppClient:
         last_err: Exception | None = None
         for attempt in range(1, max_retries + 2):
             try:
-                async with session.post(url, json=body, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=total_timeout)) as resp:
+                async with session.post(
+                    url,
+                    json=body,
+                    headers=self._headers(),
+                    timeout=aiohttp.ClientTimeout(total=total_timeout),
+                ) as resp:
                     text = await resp.text()
                     if resp.status != 200:
-                        raise WppApiError(f"http_{resp.status}", f"{endpoint} -> HTTP {resp.status}: {text[:200]}")
+                        raise WppApiError(
+                            f"http_{resp.status}", f"{endpoint} -> HTTP {resp.status}: {text[:200]}"
+                        )
                     try:
                         data = json.loads(text)
                     except json.JSONDecodeError:
@@ -259,8 +266,13 @@ class WppClient:
                     # vendor 成功判定 (P1-5): Code!=0 或 Success is False 都视为失败。
                     # 实测 send_txt/getqr 等成功均 Code=0 + Success=true; 已知语义特殊的端点走豁免。
                     code = data.get("Code")
-                    if data.get("Success") is False or (code is not None and code != 0 and endpoint not in _IGNORE_CODE_ENDPOINTS):
-                        raise WppApiError(code if code is not None else data.get("CodeValue", "?"), f"{endpoint} -> {text[:300]}")
+                    if data.get("Success") is False or (
+                        code is not None and code != 0 and endpoint not in _IGNORE_CODE_ENDPOINTS
+                    ):
+                        raise WppApiError(
+                            code if code is not None else data.get("CodeValue", "?"),
+                            f"{endpoint} -> {text[:300]}",
+                        )
                     return data
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_err = e
@@ -280,7 +292,9 @@ class WppClient:
         session = await self._session_acquire()
         url = self._url("/User/GetOnlineInfo")
         try:
-            async with session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+            async with session.get(
+                url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=self.timeout)
+            ) as resp:
                 text = await resp.text()
                 try:
                     return json.loads(text)
@@ -298,7 +312,12 @@ class WppClient:
         session = await self._session_acquire()
         url = self._url("/User/GetContractProfile")
         try:
-            async with session.post(url, json={}, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+            async with session.post(
+                url,
+                json={},
+                headers=self._headers(),
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            ) as resp:
                 text = await resp.text()
                 try:
                     return json.loads(text)
@@ -523,9 +542,7 @@ class WppClient:
             and uid not in SYSTEM_SENDERS
         }
         if not members:
-            logger.debug(
-                f"[WPP] 群成员快照为空, 当作失败: {chatroom_id} raw={len(raw_members)}"
-            )
+            logger.debug(f"[WPP] 群成员快照为空, 当作失败: {chatroom_id} raw={len(raw_members)}")
             return None
 
         now = time.monotonic()
@@ -546,9 +563,7 @@ class WppClient:
 
     async def _contact_nickname(self, wxid: str) -> str:
         try:
-            resp = await self._post(
-                "/Friend/GetContractDetail", {"userName": wxid}, max_retries=0
-            )
+            resp = await self._post("/Friend/GetContractDetail", {"userName": wxid}, max_retries=0)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[WPP] 联系人昵称查询失败 {wxid}: {e}")
             return ""
@@ -564,7 +579,9 @@ class WppClient:
         session = await self._session_acquire()
         url = self._url("/Login/LongLinkStatus")
         try:
-            async with session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+            async with session.get(
+                url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=self.timeout)
+            ) as resp:
                 text = await resp.text()
                 try:
                     return json.loads(text)
@@ -574,7 +591,9 @@ class WppClient:
             return {"Code": -3, "Success": False, "Message": f"网络错误: {e}"}
 
     # ------------------------------------------------------------------ 文件下载
-    async def download_file_binary(self, attach_id: str, user_name: str, data_len: int) -> bytes | None:
+    async def download_file_binary(
+        self, attach_id: str, user_name: str, data_len: int
+    ) -> bytes | None:
         """POST /api/Tools/DownloadFileBinary — 完整下载 v1 文件 (原始字节流, 非 base64)。
 
         参考 wpp-openclaw file.ts (v1.2.5 FILE-DOWNLOAD-BINARY):
@@ -599,7 +618,11 @@ class WppClient:
                     return None
                 # P2-3: 大小上限 (200MB), 防超大文件撑爆内存
                 content_length = resp.headers.get("Content-Length")
-                if content_length and content_length.isdigit() and int(content_length) > MAX_FILE_BYTES:
+                if (
+                    content_length
+                    and content_length.isdigit()
+                    and int(content_length) > MAX_FILE_BYTES
+                ):
                     logger.warning(f"[WPP] file too large: {content_length} bytes, skip")
                     return None
                 buf = bytearray()
@@ -651,13 +674,19 @@ class WppClient:
         }
         try:
             async with session.post(
-                url, json=body, headers=headers,
+                url,
+                json=body,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=max(self.timeout, 60)),
             ) as resp:
                 if resp.status != 200:
                     return None
                 content_length = resp.headers.get("Content-Length")
-                if content_length and content_length.isdigit() and int(content_length) > 20 * 1024 * 1024:
+                if (
+                    content_length
+                    and content_length.isdigit()
+                    and int(content_length) > 20 * 1024 * 1024
+                ):
                     logger.warning(f"[WPP] voice too large: {content_length} bytes, skip")
                     return None
                 buf = bytearray()
@@ -673,7 +702,9 @@ class WppClient:
             return None
 
     # ------------------------------------------------------------------ 视频下载
-    async def download_video(self, msg_id: str, to_wxid: str, data_len: int, compress_type: int = 0) -> bytes | None:
+    async def download_video(
+        self, msg_id: str, to_wxid: str, data_len: int, compress_type: int = 0
+    ) -> bytes | None:
         """POST /api/Tools/DownloadVideo — 分片下载 v1 视频.
 
         参考 wpp-openclaw video.ts (v1.3.8 VIDEO-DOWNLOAD):
@@ -705,7 +736,12 @@ class WppClient:
                     "section": {"start_pos": start_pos, "data_len": section_len},
                     "compress_type": compress_type,
                 }
-                async with session.post(url, json=body, headers=headers, timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                async with session.post(
+                    url,
+                    json=body,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                ) as resp:
                     if resp.status != 200:
                         return None
                     try:
@@ -936,10 +972,13 @@ class WppClient:
         业务回调才能推完整消息 (AddMsgs 含 content)。
         """
         try:
-            await self._post("/Webhook/Business/Set", {
-                "syncMessageUrl": sync_message_url,
-                "logoutUrl": logout_url or sync_message_url,
-            })
+            await self._post(
+                "/Webhook/Business/Set",
+                {
+                    "syncMessageUrl": sync_message_url,
+                    "logoutUrl": logout_url or sync_message_url,
+                },
+            )
             return True
         except Exception:  # noqa: BLE001
             return False
@@ -958,7 +997,7 @@ class WppClient:
         if not image_ref:
             raise WppApiError("bad_image", "空的图片引用")
         if image_ref.startswith("base64://"):
-            return image_ref[len("base64://"):]
+            return image_ref[len("base64://") :]
         if image_ref.startswith("data:image"):
             _head, _, b64 = image_ref.partition(";base64,")
             if b64:
@@ -981,6 +1020,7 @@ class WppClient:
             return base64.b64encode(data).decode()
         # 本地路径
         from pathlib import Path
+
         p = Path(image_ref)
         if p.exists():
             return base64.b64encode(p.read_bytes()).decode()
@@ -1004,6 +1044,7 @@ class WppClient:
         # 明确拒绝 IP 字面量 (除回环)
         if host and host not in ("127.0.0.1", "localhost", "::1"):
             import ipaddress
+
             try:
                 ipaddress.ip_address(host)
                 return False  # 非回环 IP 直接拒绝

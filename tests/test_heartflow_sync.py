@@ -93,9 +93,7 @@ class TestPureHelpers(unittest.TestCase):
             "qq:GroupMessage:123",
             "manual:GroupMessage:x",
         ]
-        merged = sync_mod.merge_whitelist(
-            existing, "wpp", ["wpp:GroupMessage:new@chatroom"]
-        )
+        merged = sync_mod.merge_whitelist(existing, "wpp", ["wpp:GroupMessage:new@chatroom"])
         self.assertEqual(
             merged,
             [
@@ -131,9 +129,7 @@ class TestSyncConfig(unittest.IsolatedAsyncioTestCase):
                 ensure_ascii=False,
             ).encode("utf-8")
         )
-        self.patch = patch.object(
-            sync_mod, "heartflow_config_path", return_value=self.path
-        )
+        self.patch = patch.object(sync_mod, "heartflow_config_path", return_value=self.path)
         self.patch.start()
 
     def tearDown(self):
@@ -145,9 +141,7 @@ class TestSyncConfig(unittest.IsolatedAsyncioTestCase):
 
     async def test_sync_writes_merged_list_and_keeps_bom(self):
         sync_mod.configure(None)
-        result = sync_mod.sync_heartflow_whitelist(
-            "wpp", ["test-group@chatroom"], "test"
-        )
+        result = sync_mod.sync_heartflow_whitelist("wpp", ["test-group@chatroom"], "test")
         self.assertTrue(result["changed"])
         data = self._read()
         self.assertEqual(
@@ -164,9 +158,7 @@ class TestSyncConfig(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["changed"])
 
     async def test_updates_live_heartflow_instance(self):
-        instance = SimpleNamespace(
-            chat_whitelist=[], config={"enable_heartflow": True}
-        )
+        instance = SimpleNamespace(chat_whitelist=[], config={"enable_heartflow": True})
         meta = SimpleNamespace(
             name="astrbot_plugin_Heartflow",
             module_path="astrbot_plugin_Heartflow.main",

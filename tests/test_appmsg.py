@@ -279,9 +279,7 @@ class TestCompat(unittest.TestCase):
         abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
         self.assertTrue(any(type(c).__name__ == "At" for c in abm.message))
 
-        p = policy.PolicySnapshot(
-            group_reply="atbot", self_wxid="wxid_bot", self_nickname="小助手"
-        )
+        p = policy.PolicySnapshot(group_reply="atbot", self_wxid="wxid_bot", self_nickname="小助手")
         self.assertTrue(
             policy.is_allowed(p, "wxid_f", True, "123@chatroom", "@张三 hi", "", ["wxid_bot"])
         )

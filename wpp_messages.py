@@ -66,26 +66,28 @@ _MSG_TYPE_NAMES = {
 #   wxpayhelper=智慧商户服务助手, weixinpay=已注销支付号
 # wxpay=微信支付 / brandsessionholder=订阅号消息: 微信内部服务号, 不返回通讯录详情,
 # 但社区与协议侧长期使用这两个固定 username, 一并拦截。
-SYSTEM_SENDERS = frozenset({
-    "weixin",            # 微信团队
-    "wxpay",             # 微信支付
-    "weixinpay",         # 微信支付 (旧/已注销)
-    "tenpay",            # 财付通
-    "wechatpay",         # WeChat Payment
-    "wxpayhelper",       # 智慧商户服务助手
-    "notifymessage",     # 服务通知
-    "weixinsrc",         # 微信安全中心
-    "filehelper",        # 文件传输助手 (命令已在前面处理; 非命令不进 AI)
-    "brandsessionholder",  # 订阅号消息
-    "qqmail",            # QQ邮箱提醒
-    "weixinreminder",    # 语音提醒
-    "fmessage",          # 好友请求 / 系统好友
-    "mphelper",          # 公众平台助手
-    "newsapp",           # 腾讯新闻 / 系统资讯
-    "medianote",         # 语音记事本
-    "floatbottle",       # 漂流瓶
-    "weixinlianbo",      # 微信连播
-})
+SYSTEM_SENDERS = frozenset(
+    {
+        "weixin",  # 微信团队
+        "wxpay",  # 微信支付
+        "weixinpay",  # 微信支付 (旧/已注销)
+        "tenpay",  # 财付通
+        "wechatpay",  # WeChat Payment
+        "wxpayhelper",  # 智慧商户服务助手
+        "notifymessage",  # 服务通知
+        "weixinsrc",  # 微信安全中心
+        "filehelper",  # 文件传输助手 (命令已在前面处理; 非命令不进 AI)
+        "brandsessionholder",  # 订阅号消息
+        "qqmail",  # QQ邮箱提醒
+        "weixinreminder",  # 语音提醒
+        "fmessage",  # 好友请求 / 系统好友
+        "mphelper",  # 公众平台助手
+        "newsapp",  # 腾讯新闻 / 系统资讯
+        "medianote",  # 语音记事本
+        "floatbottle",  # 漂流瓶
+        "weixinlianbo",  # 微信连播
+    }
+)
 
 # 微信原生支付类 appmsg（转账/红包）。只在**卡片**(msgType=49)上采信，
 # 绝不按纯文本里的"红包"二字判断 —— 群接龙文案常自带"红包"（历史事故）。
@@ -281,9 +283,7 @@ def src_chatroom(src: dict) -> str:
 
 
 def src_content(src: dict) -> str:
-    return safe_str(
-        src.get("content") or src.get("Content") or src.get("text") or src.get("msg")
-    )
+    return safe_str(src.get("content") or src.get("Content") or src.get("text") or src.get("msg"))
 
 
 def src_msg_key(src: dict) -> str:
@@ -339,12 +339,7 @@ def src_msg_type(src: dict) -> int:
 
     兼容字符串类型 (`"image"` / `"voice"` 等) —— 部分 vendor 变体会这样推。
     """
-    raw = (
-        src.get("msgType")
-        or src.get("MsgType")
-        or src.get("type")
-        or src.get("msg_type")
-    )
+    raw = src.get("msgType") or src.get("MsgType") or src.get("type") or src.get("msg_type")
     if raw is None or safe_str(raw) == "":
         # 部分 vendor 变体只给 `kind` ("app"/"image"/"voice"...), 没有数字类型
         raw = src.get("kind")
@@ -511,7 +506,11 @@ def build_reply_component(src: dict) -> Reply | None:
         go_fields = src.get("go_fields")
         if not isinstance(go_fields, dict):
             return None
-        ctx = go_fields.get("ReplyContext") if isinstance(go_fields.get("ReplyContext"), dict) else None
+        ctx = (
+            go_fields.get("ReplyContext")
+            if isinstance(go_fields.get("ReplyContext"), dict)
+            else None
+        )
     if not isinstance(ctx, dict):
         return None
 
@@ -720,7 +719,11 @@ def to_astrbot_message(
 
     elif msg_type == MSG_TYPE_VIDEO or safe_str(src.get("kind")).lower() == "video":
         video_obj = src.get("video") if isinstance(src.get("video"), dict) else {}
-        vc = video_obj.get("download_context") if isinstance(video_obj.get("download_context"), dict) else {}
+        vc = (
+            video_obj.get("download_context")
+            if isinstance(video_obj.get("download_context"), dict)
+            else {}
+        )
         abm.message_str = "[视频]"
         abm.message = [Plain("[视频]")]
         abm._wpp_video_meta = {

@@ -204,16 +204,12 @@ async def _send_chain_locked(
         # 超过 500 字符时: 引用气泡放第一段 (@昵称 + head), 剩余内容
         # 作为普通文本续发, 保证既不丢引用/@, 也不截断长回复。
         if pending_reply is not None and text:
-            mention_name = await _resolve_quote_mention_name(
-                api, to_wxid, ats, pending_reply
-            )
+            mention_name = await _resolve_quote_mention_name(api, to_wxid, ats, pending_reply)
             prefix = _mention_prefix(to_wxid, ats, mention_name)
             budget = QUOTE_TEXT_LIMIT - len(prefix) - 1 if prefix else QUOTE_TEXT_LIMIT
             head, tail = split_quote_text(text, max(1, budget))
             # 群聊引用气泡没有 At 字段: 正文前加 "@昵称 " 提醒被引用成员。
-            quote_text = _quote_text_with_mention(
-                to_wxid, head, ats, mention_name=mention_name
-            )
+            quote_text = _quote_text_with_mention(to_wxid, head, ats, mention_name=mention_name)
             xml = build_quote_reply_xml(
                 quote_text,
                 getattr(pending_reply, "id", ""),
@@ -234,9 +230,7 @@ async def _send_chain_locked(
                 # 引用发送失败时不要吞掉正文: 退回普通文本路径重发完整内容。
                 stats["failed"] += 1
                 stats["errors"].append(f"send_quote: {e}")
-                logger.warning(
-                    f"[WPP:{account_id}] send_quote failed, 回退普通文本: {e}"
-                )
+                logger.warning(f"[WPP:{account_id}] send_quote failed, 回退普通文本: {e}")
             else:
                 stats["sent"] += 1
                 pending_reply = None
@@ -267,34 +261,22 @@ async def _send_chain_locked(
             pending_reply = comp
         elif isinstance(comp, Share):
             await flush_text()
-            stats = _merge_send_stats(
-                stats, await _send_share(api, to_wxid, comp, account_id)
-            )
+            stats = _merge_send_stats(stats, await _send_share(api, to_wxid, comp, account_id))
         elif isinstance(comp, Location):
             await flush_text()
-            stats = _merge_send_stats(
-                stats, await _send_location(api, to_wxid, comp, account_id)
-            )
+            stats = _merge_send_stats(stats, await _send_location(api, to_wxid, comp, account_id))
         elif isinstance(comp, Image):
             await flush_text()
-            stats = _merge_send_stats(
-                stats, await _send_image(api, to_wxid, comp, account_id)
-            )
+            stats = _merge_send_stats(stats, await _send_image(api, to_wxid, comp, account_id))
         elif isinstance(comp, File):
             await flush_text()
-            stats = _merge_send_stats(
-                stats, await _send_file(api, to_wxid, comp, account_id)
-            )
+            stats = _merge_send_stats(stats, await _send_file(api, to_wxid, comp, account_id))
         elif isinstance(comp, Record):
             await flush_text()
-            stats = _merge_send_stats(
-                stats, await _send_record(api, to_wxid, comp, account_id)
-            )
+            stats = _merge_send_stats(stats, await _send_record(api, to_wxid, comp, account_id))
         elif isinstance(comp, Video):
             await flush_text()
-            stats = _merge_send_stats(
-                stats, await _send_video(api, to_wxid, comp, account_id)
-            )
+            stats = _merge_send_stats(stats, await _send_video(api, to_wxid, comp, account_id))
         else:
             logger.debug(f"[WPP:{account_id}] 未支持的出站组件: {type(comp).__name__}")
 
@@ -362,9 +344,7 @@ async def _resolve_quote_mention_name(
     resolver = getattr(api, "resolve_nickname", None)
     if callable(resolver):
         try:
-            nick = await asyncio.wait_for(
-                resolver(qq, to_wxid), timeout=NICKNAME_RESOLVE_TIMEOUT
-            )
+            nick = await asyncio.wait_for(resolver(qq, to_wxid), timeout=NICKNAME_RESOLVE_TIMEOUT)
         except Exception as e:  # noqa: BLE001 - 昵称查询失败不影响发送
             logger.debug(f"[WPP] 引用回复昵称解析失败 {qq}: {e}")
             nick = ""
@@ -390,9 +370,7 @@ def _mention_prefix(to_wxid: str, ats: list[At], mention_name: str = "") -> str:
     return f"@{name}"
 
 
-def _quote_text_with_mention(
-    to_wxid: str, text: str, ats: list[At], mention_name: str = ""
-) -> str:
+def _quote_text_with_mention(to_wxid: str, text: str, ats: list[At], mention_name: str = "") -> str:
     """群聊引用回复: 把核心插入的 At 合并为正文的 "@昵称 " 前缀。
 
     WeChat 的引用气泡 (appmsg type=57) 走 /Msg/ShareLink, 没有 At 字段,
@@ -483,9 +461,7 @@ def _one_result(ok: bool, error: str = "") -> dict[str, Any]:
     return {"sent": 1 if ok else 0, "failed": 0 if ok else 1, "errors": [error] if error else []}
 
 
-async def _send_share(
-    api: WppClient, to_wxid: str, comp: Share, account_id: str
-) -> dict[str, Any]:
+async def _send_share(api: WppClient, to_wxid: str, comp: Share, account_id: str) -> dict[str, Any]:
     try:
         xml = build_share_link_xml(
             getattr(comp, "title", "") or getattr(comp, "url", ""),
@@ -517,9 +493,7 @@ async def _send_location(
         return _one_result(False, f"send_location: {e}")
 
 
-async def _send_image(
-    api: WppClient, to_wxid: str, comp: Image, account_id: str
-) -> dict[str, Any]:
+async def _send_image(api: WppClient, to_wxid: str, comp: Image, account_id: str) -> dict[str, Any]:
     try:
         path = await comp.convert_to_file_path()
         await api.send_image(to_wxid, path)
@@ -545,9 +519,7 @@ async def _read_bytes(path: str) -> bytes | None:
         return None
 
 
-async def _send_file(
-    api: WppClient, to_wxid: str, comp: File, account_id: str
-) -> dict[str, Any]:
+async def _send_file(api: WppClient, to_wxid: str, comp: File, account_id: str) -> dict[str, Any]:
     try:
         path = await comp.get_file()
         if not path:
@@ -563,9 +535,7 @@ async def _send_file(
         return _one_result(False, f"send_file: {e}")
 
 
-async def _send_video(
-    api: WppClient, to_wxid: str, comp: Video, account_id: str
-) -> dict[str, Any]:
+async def _send_video(api: WppClient, to_wxid: str, comp: Video, account_id: str) -> dict[str, Any]:
     try:
         path = await comp.convert_to_file_path()
         data = await _read_bytes(path)
@@ -608,9 +578,7 @@ async def _send_record(
         # vendor 对 VoiceTime=0 直接返回 Code=-2，必须带真实时长 (mp3 也一样)
         voice_time = await _audio_duration_ms(path, ext)
         if voice_time <= 0:
-            logger.warning(
-                f"[WPP:{account_id}] 无法获取语音时长, vendor 可能拒发: {path}"
-            )
+            logger.warning(f"[WPP:{account_id}] 无法获取语音时长, vendor 可能拒发: {path}")
         # vendor 还对语音 payload > 64,500B 直接返回 Code=-2。统一转微信原生
         # SILK, 单条 ≤60s; 码率按 24k→6k 阶梯选最高的能塞进 64,500B 的
         # (实测 6k/8k/9k 在微信端均可正常播放)。
@@ -622,14 +590,10 @@ async def _send_record(
                     f" (SILK, 单段 ≤{VOICE_MAX_MS // 1000}s)"
                 )
             for silk, seg_ms in segments:
-                await api.send_voice(
-                    to_wxid, silk, fmt_type=4, voice_time_ms=seg_ms
-                )
+                await api.send_voice(to_wxid, silk, fmt_type=4, voice_time_ms=seg_ms)
             return _one_result(True)
         if len(data) > VOICE_MAX_BYTES:
-            fb = await _fallback(
-                f"语音 {len(data)}B 超过 vendor 64,500B 限制且无法转 SILK"
-            )
+            fb = await _fallback(f"语音 {len(data)}B 超过 vendor 64,500B 限制且无法转 SILK")
             if fb is not None:
                 return fb
             logger.warning(
@@ -683,9 +647,7 @@ async def _encode_silk_segments(path: str) -> list[tuple[bytes, int]]:
             pos = end
         if ok:
             return segments
-        logger.warning(
-            f"[WPP] SILK 分段 {max_ms}ms 在 6kbps 下仍超 64,500B, 收缩分段后重试"
-        )
+        logger.warning(f"[WPP] SILK 分段 {max_ms}ms 在 6kbps 下仍超 64,500B, 收缩分段后重试")
         max_ms = max_ms * 4 // 5
     logger.warning("[WPP] SILK 分段编码失败, 放弃 SILK")
     return []

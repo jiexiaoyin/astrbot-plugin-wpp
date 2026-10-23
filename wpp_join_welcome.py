@@ -199,11 +199,7 @@ def diff_members(
     """
     old = baseline or {}
     new = current or {}
-    added = [
-        (str(wxid), str(nick or ""))
-        for wxid, nick in new.items()
-        if wxid and wxid not in old
-    ]
+    added = [(str(wxid), str(nick or "")) for wxid, nick in new.items() if wxid and wxid not in old]
     removed = [str(wxid) for wxid in old if wxid not in new]
     return added, removed
 

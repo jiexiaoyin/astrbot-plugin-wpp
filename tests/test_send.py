@@ -51,9 +51,7 @@ class TestOutboundChain(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, [("text", "wxid_to", "你好", ["wxid_a"])])
 
     async def test_quote_reply(self):
-        calls = await run_chain(
-            [Reply(id="123", sender_id="wxid_a"), Plain("收到")]
-        )
+        calls = await run_chain([Reply(id="123", sender_id="wxid_a"), Plain("收到")])
         self.assertEqual(len(calls), 1)
         kind, to_wxid, xml, app_type = calls[0]
         self.assertEqual((kind, to_wxid, app_type), ("app", "wxid_to", 5))
@@ -115,9 +113,7 @@ class TestOutboundChain(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<title>收到</title>", calls[0][2])
 
     async def test_private_quote_does_not_add_mention_prefix(self):
-        calls = await run_chain(
-            [Reply(id="9"), At(qq="wxid_a", name="张三"), Plain("收到")]
-        )
+        calls = await run_chain([Reply(id="9"), At(qq="wxid_a", name="张三"), Plain("收到")])
         self.assertEqual(len(calls), 1)
         self.assertIn("<title>收到</title>", calls[0][2])
 

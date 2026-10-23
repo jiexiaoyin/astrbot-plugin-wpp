@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.11.7 (2026-10-23) — 开发规范审计修正
+
+### 修复
+- `/wpp_status` 增加管理员权限限制，与 `/wpp_policy`、`/wpp_sync` 保持一致。
+- 平台适配器注册显式声明 `support_streaming_message=False`，使 Dashboard
+  展示的能力与实例元数据一致（此前 registry 默认报告为支持流式）。
+- 移除 `metadata.yaml` 中非 AstrBot 标准的 `entry` 字段。
+- `.gitignore` 增加 `data/`，避免运行时数据误入仓库。
+- 全仓执行 `ruff format`，统一格式。
+
 ## v0.11.6 (2026-10-23) — 语音发送失败降级为文字
 
 ### 修复

@@ -94,9 +94,7 @@ class WppPlugin(Star):
             for path in paths:
                 event.track_temporary_local_file(path)
         except Exception as e:  # noqa: BLE001
-            logger.warning(
-                f"[WPP:{getattr(account, 'account_id', '-')}] 懒加载媒体失败: {e}"
-            )
+            logger.warning(f"[WPP:{getattr(account, 'account_id', '-')}] 懒加载媒体失败: {e}")
 
     async def web_account_info(self):
         """输入 X-Access-Token, 返回该 token 绑定的微信账号在线状态/wxid。
@@ -177,9 +175,7 @@ class WppPlugin(Star):
     # ------------------------------------------------------------------ 策略管理
     @staticmethod
     def _account_policy_view(acct) -> dict:
-        auto_proactive = sorted(
-            str(u) for u in acct.allow_users if str(u).endswith("@chatroom")
-        )
+        auto_proactive = sorted(str(u) for u in acct.allow_users if str(u).endswith("@chatroom"))
         return {
             "id": acct.account_id,
             "allow_users": sorted(acct.allow_users),
@@ -187,9 +183,7 @@ class WppPlugin(Star):
             "blacklist_groups": sorted(acct.blacklist_groups),
             "proactive_groups": sorted(acct.proactive_groups),
             "auto_proactive_groups": auto_proactive,
-            "effective_proactive_groups": sorted(
-                set(acct.proactive_groups) | set(auto_proactive)
-            ),
+            "effective_proactive_groups": sorted(set(acct.proactive_groups) | set(auto_proactive)),
             "group_reply": acct.group_reply,
             "require_at_mention": acct.require_at_mention,
             "lazy_media": bool(getattr(acct, "lazy_media", True)),
@@ -200,9 +194,7 @@ class WppPlugin(Star):
         instances = []
         for inst in self._get_wpp_instances():
             accounts = list(getattr(inst, "accounts", []) or [])
-            mode = str(
-                getattr(inst, "heartflow_whitelist_mode", "auto") or "auto"
-            )
+            mode = str(getattr(inst, "heartflow_whitelist_mode", "auto") or "auto")
             try:
                 targets, rejected = resolve_heartflow_groups(
                     accounts,
@@ -214,9 +206,7 @@ class WppPlugin(Star):
             instances.append(
                 {
                     "id": getattr(inst, "instance_id", ""),
-                    "heartflow_sync_enabled": bool(
-                        getattr(inst, "heartflow_sync_enabled", True)
-                    ),
+                    "heartflow_sync_enabled": bool(getattr(inst, "heartflow_sync_enabled", True)),
                     "heartflow_mode": mode,
                     "heartflow_custom_groups": sorted(
                         str(g) for g in (getattr(inst, "heartflow_groups", set()) or set())
@@ -278,8 +268,7 @@ class WppPlugin(Star):
                 bad = sorted(v for v in items if not v.endswith("@chatroom"))
                 if bad:
                     return error_response(
-                        f"{field} 只能包含以 @chatroom 结尾的群 ID："
-                        + ", ".join(bad[:5])
+                        f"{field} 只能包含以 @chatroom 结尾的群 ID：" + ", ".join(bad[:5])
                     )
             if field == "block_users":
                 bad = sorted(v for v in items if v.endswith("@chatroom"))
@@ -302,9 +291,7 @@ class WppPlugin(Star):
             acct.save_policy()
         if inst is not None:
             inst.sync_heartflow_whitelist("dashboard")
-        return json_response(
-            {"ok": True, "account": self._account_policy_view(acct)}
-        )
+        return json_response({"ok": True, "account": self._account_policy_view(acct)})
 
     async def web_heartflow_sync(self):
         payload = await request.json(default={})
@@ -374,7 +361,8 @@ class WppPlugin(Star):
             pm = getattr(self.context, "platform_manager", None)
             insts = getattr(pm, "platform_insts", []) if pm else []
             return [
-                inst for inst in insts
+                inst
+                for inst in insts
                 if getattr(inst, "meta", None) and inst.meta().name == PLATFORM_NAME
             ]
         except Exception:  # noqa: BLE001
@@ -435,9 +423,10 @@ class WppPlugin(Star):
         except Exception:  # noqa: BLE001
             return None
 
+    @filter.permission_type(PermissionType.ADMIN)
     @filter.command("wpp_status")
     async def wpp_status(self, event: AstrMessageEvent):
-        """查询 WPP 账号在线状态 (/wpp_status [实例id|账号id])。"""
+        """查询 WPP 账号在线状态 (/wpp_status [实例id|账号id], 仅管理员)。"""
         insts = self._get_wpp_instances()
         if not insts:
             yield event.plain_result(
@@ -454,10 +443,7 @@ class WppPlugin(Star):
             if not target or getattr(inst, "instance_id", "") == target:
                 targets.extend(getattr(inst, "accounts", []))
             else:
-                targets.extend(
-                    a for a in getattr(inst, "accounts", [])
-                    if a.account_id == target
-                )
+                targets.extend(a for a in getattr(inst, "accounts", []) if a.account_id == target)
         if not targets:
             yield event.plain_result(f"未找到 WPP 实例/账号: {target}")
             return
@@ -478,9 +464,7 @@ class WppPlugin(Star):
                 lines.append(f"{icon} {acct.account_id}: wxid={wxid or '-'} online={online_flag}")
             else:
                 lines.append(f"❌ {acct.account_id}: {online.get('Message', '未登录/离线')}")
-            lines.append(
-                f"   长连接: {longlink.get('Message', longlink.get('Data', '无数据'))}"
-            )
+            lines.append(f"   长连接: {longlink.get('Message', longlink.get('Data', '无数据'))}")
         yield event.plain_result("\n".join(lines))
 
     @filter.permission_type(PermissionType.ADMIN)
@@ -519,9 +503,7 @@ class WppPlugin(Star):
             return
 
         if len(parts) < 4:
-            yield event.plain_result(
-                "用法: /wpp_policy <账号> <字段> <add|del|set> <值...>"
-            )
+            yield event.plain_result("用法: /wpp_policy <账号> <字段> <add|del|set> <值...>")
             return
 
         account_id, field, action = parts[1], parts[2], parts[3].lower()

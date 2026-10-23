@@ -69,16 +69,12 @@ class TestPolicyApi(unittest.TestCase):
         view = plugin._account_policy_view(fake_account())
         self.assertEqual(view["allow_users"], ["123@chatroom", "u1"])
         self.assertEqual(view["auto_proactive_groups"], ["123@chatroom"])
-        self.assertEqual(
-            view["effective_proactive_groups"], ["123@chatroom"]
-        )
+        self.assertEqual(view["effective_proactive_groups"], ["123@chatroom"])
         self.assertEqual(view["stats"]["send"]["sent"], 1)
         instances = plugin._policy_instances()
         self.assertEqual(instances[0]["id"], "wpp")
         self.assertEqual(instances[0]["heartflow_mode"], "custom")
-        self.assertEqual(
-            instances[0]["heartflow_target_groups"], ["123@chatroom"]
-        )
+        self.assertEqual(instances[0]["heartflow_target_groups"], ["123@chatroom"])
         self.assertEqual(instances[0]["heartflow_rejected_groups"], [])
         self.assertNotIn("data", instances[0])
 
@@ -118,9 +114,7 @@ class TestPolicyApi(unittest.TestCase):
         }
         with patch.object(main_mod.request, "json", AsyncMock(return_value=payload)):
             main_mod.asyncio.run(plugin.web_policy_update())
-        self.assertEqual(
-            acct.allow_users, {"u1", "123@chatroom", "456@chatroom"}
-        )
+        self.assertEqual(acct.allow_users, {"u1", "123@chatroom", "456@chatroom"})
 
     def test_update_rejects_invalid_group_reply(self):
         acct = fake_account()
@@ -141,9 +135,7 @@ class TestPolicyApi(unittest.TestCase):
         for field, value, expected in cases:
             with self.subTest(field=field):
                 payload = {"account_id": "wpp", field: value}
-                with patch.object(
-                    main_mod.request, "json", AsyncMock(return_value=payload)
-                ):
+                with patch.object(main_mod.request, "json", AsyncMock(return_value=payload)):
                     resp = main_mod.asyncio.run(plugin.web_policy_update())
                 body = json.loads(resp.body)
                 self.assertEqual(body["status"], "error")
@@ -167,9 +159,7 @@ class TestPolicyApi(unittest.TestCase):
         acct = fake_account()
         inst = fake_instance(acct)
         plugin = object.__new__(main_mod.WppPlugin)
-        plugin.context = SimpleNamespace(
-            platform_manager=SimpleNamespace(platform_insts=[inst])
-        )
+        plugin.context = SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[inst]))
         with patch.object(main_mod.request, "json", AsyncMock(return_value={})):
             resp = main_mod.asyncio.run(plugin.web_status_refresh())
         self.assertTrue(resp)
@@ -186,9 +176,7 @@ class TestPolicyApi(unittest.TestCase):
         inst = fake_instance(acct)
         inst._refresh_account_status = AsyncMock(side_effect=RuntimeError("offline"))
         plugin = object.__new__(main_mod.WppPlugin)
-        plugin.context = SimpleNamespace(
-            platform_manager=SimpleNamespace(platform_insts=[inst])
-        )
+        plugin.context = SimpleNamespace(platform_manager=SimpleNamespace(platform_insts=[inst]))
         with patch.object(main_mod.request, "json", AsyncMock(return_value={})):
             resp = main_mod.asyncio.run(plugin.web_status_refresh())
         body = json.loads(resp.body)

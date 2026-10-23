@@ -65,7 +65,7 @@ class TestOtherMessageTypes(unittest.TestCase):
             "sender_id": "wxid_f",
             "msg_id": "emoji1",
             "msg_type": 47,
-            "content": "<msg><emoji md5=\"abc\" len=\"123\"/></msg>",
+            "content": '<msg><emoji md5="abc" len="123"/></msg>',
         }
         abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
         self.assertIsNotNone(abm)
@@ -118,9 +118,7 @@ class TestToAstrBotMessage(unittest.TestCase):
             "members": {"wxid_friend": "张三", "wxid_owner": "群主"},
             "member_count": 2,
         }
-        abm = msgs.to_astrbot_message(
-            src, "wxid_bot", "小助手", group_profile=profile
-        )
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手", group_profile=profile)
         self.assertIsNotNone(abm)
         self.assertEqual(abm.group.group_name, "调试群")
         self.assertEqual(abm.group.group_owner, "wxid_owner")
@@ -138,9 +136,7 @@ class TestToAstrBotMessage(unittest.TestCase):
             "chatroom_id": "123@chatroom",
             "msg_id": "m-nick",
         }
-        abm = msgs.to_astrbot_message(
-            src, "wxid_bot", "小助手", sender_nickname="张三"
-        )
+        abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手", sender_nickname="张三")
         self.assertIsNotNone(abm)
         self.assertEqual(abm.sender.nickname, "张三")
 
@@ -169,19 +165,25 @@ class TestToAstrBotMessage(unittest.TestCase):
         self.assertFalse(any(type(c).__name__ == "At" for c in abm.message))
 
     def test_outgoing_and_self_skipped(self):
-        self.assertIsNone(msgs.to_astrbot_message(
-            {"sender_id": "wxid_bot", "content": "x", "direction": "outgoing"},
-            "wxid_bot", "小助手",
-        ))
-        self.assertIsNone(msgs.to_astrbot_message(
-            {"sender_id": "wxid_bot", "content": "x"},
-            "wxid_bot", "小助手",
-        ))
+        self.assertIsNone(
+            msgs.to_astrbot_message(
+                {"sender_id": "wxid_bot", "content": "x", "direction": "outgoing"},
+                "wxid_bot",
+                "小助手",
+            )
+        )
+        self.assertIsNone(
+            msgs.to_astrbot_message(
+                {"sender_id": "wxid_bot", "content": "x"},
+                "wxid_bot",
+                "小助手",
+            )
+        )
 
     def test_revoke_skipped(self):
-        self.assertIsNone(msgs.to_astrbot_message(
-            {"sender_id": "wxid_f", "content": "", "msg_type": 10002}
-        ))
+        self.assertIsNone(
+            msgs.to_astrbot_message({"sender_id": "wxid_f", "content": "", "msg_type": 10002})
+        )
 
     def test_group_image_meta_uses_chatroom(self):
         src = {
@@ -189,9 +191,10 @@ class TestToAstrBotMessage(unittest.TestCase):
             "msg_type": 3,
             "chatroom_id": "123@chatroom",
             "local_id": "img_1",
-            "image": {"data_len": 10, "cdn_download_contexts": [
-                {"file_aes_key": "k", "file_no": "n"}
-            ]},
+            "image": {
+                "data_len": 10,
+                "cdn_download_contexts": [{"file_aes_key": "k", "file_no": "n"}],
+            },
         }
         abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
         self.assertEqual(abm._wpp_image_meta["to_wxid"], "123@chatroom")
@@ -204,9 +207,10 @@ class TestToAstrBotMessage(unittest.TestCase):
             "msg_type": 3,
             "chatroom_id": "123@chatroom",
             "local_id": "img_2",
-            "image": {"data_len": 10, "cdn_download_contexts": [
-                {"file_aes_key": "k", "file_no": "n"}
-            ]},
+            "image": {
+                "data_len": 10,
+                "cdn_download_contexts": [{"file_aes_key": "k", "file_no": "n"}],
+            },
         }
         abm = msgs.to_astrbot_message(src, "wxid_bot", "小助手")
         self.assertEqual(len(abm.message), 1)
@@ -300,9 +304,7 @@ class TestToAstrBotMessage(unittest.TestCase):
             "sender_id": "wxid_friend",
             "msg_type": 6,
             "content": "a.xlsx",
-            "file": {"download_context": {
-                "attach_id": "at1", "user_name": "u", "data_len": 5
-            }},
+            "file": {"download_context": {"attach_id": "at1", "user_name": "u", "data_len": 5}},
         }
         abm = msgs.to_astrbot_message(src, "wxid_bot", "")
         self.assertEqual(abm._wpp_file_meta["attach_id"], "at1")
@@ -336,8 +338,10 @@ class TestPolicy(unittest.TestCase):
 
     def test_require_at_requires_bot_mention(self):
         p = policy.PolicySnapshot(
-            group_reply="all", require_at_mention=True,
-            self_wxid="wxid_bot", self_nickname="小助手",
+            group_reply="all",
+            require_at_mention=True,
+            self_wxid="wxid_bot",
+            self_nickname="小助手",
         )
         # @ 了别人不算
         self.assertFalse(policy.is_allowed(p, "u", True, "g@chatroom", "@张三 hi", "wxid_bot"))
@@ -345,9 +349,7 @@ class TestPolicy(unittest.TestCase):
         self.assertTrue(policy.is_allowed(p, "u", True, "g@chatroom", "@小助手 hi", "wxid_bot"))
 
     def test_atbot_mode(self):
-        p = policy.PolicySnapshot(
-            group_reply="atbot", self_wxid="wxid_bot", self_nickname="小助手"
-        )
+        p = policy.PolicySnapshot(group_reply="atbot", self_wxid="wxid_bot", self_nickname="小助手")
         self.assertFalse(policy.is_allowed(p, "u", True, "g@chatroom", "hi"))
         self.assertTrue(policy.is_allowed(p, "u", True, "g@chatroom", "@小助手 hi"))
 
@@ -419,8 +421,10 @@ class TestStorage(unittest.TestCase):
                 json.dumps({"allow_users": ["u1"], "group_reply": "none"}),
                 encoding="utf-8",
             )
-            with patch.object(storage, "plugin_data_dir", return_value=Path(d) / "new"), \
-                 patch.object(storage, "legacy_accounts_dir", return_value=legacy):
+            with (
+                patch.object(storage, "plugin_data_dir", return_value=Path(d) / "new"),
+                patch.object(storage, "legacy_accounts_dir", return_value=legacy),
+            ):
                 store = storage.AccountStore("acct_old")
                 cfg = store.load_config()
                 self.assertEqual(cfg["allow_users"], ["u1"])

@@ -34,15 +34,15 @@ storage = importlib.import_module("astrbot-plugin-wpp.wpp_storage")
 
 class FakePlatform:
     """假平台 (供 WppAccount 引用, 不触网)。"""
+
     def __init__(self, instance_id="wpp"):
         self.instance_id = instance_id
         self.committed = []
 
     def meta(self):
         from astrbot.api.platform import PlatformMetadata
-        return PlatformMetadata(
-            name=mod.PLATFORM_NAME, description="t", id=self.instance_id
-        )
+
+        return PlatformMetadata(name=mod.PLATFORM_NAME, description="t", id=self.instance_id)
 
     def commit_event(self, event):
         self.committed.append(event)
@@ -72,10 +72,12 @@ class TestParseAccount(unittest.TestCase):
         """旧 wpp_accounts 不再产生账号；没有 wpp_auth_token 就没有账号。"""
         cfg = {
             "id": "wpp",
-            "wpp_accounts": json.dumps([
-                {"id": "xieyin", "authcode": "tok1"},
-                {"id": "yirong", "authcode": "tok2"},
-            ]),
+            "wpp_accounts": json.dumps(
+                [
+                    {"id": "xieyin", "authcode": "tok1"},
+                    {"id": "yirong", "authcode": "tok2"},
+                ]
+            ),
         }
         self.assertIsNone(_parse_account(cfg))
 
@@ -98,12 +100,8 @@ class TestAuthcodeLock(unittest.TestCase):
         self.assertNotIn("wxa_super_secret", fp)
 
     def test_same_authcode_cannot_run_twice(self):
-        a = WppPlatformAdapter(
-            {"id": "wpp-a", "wpp_auth_token": "same_token"}, {}, asyncio.Queue()
-        )
-        b = WppPlatformAdapter(
-            {"id": "wpp-b", "wpp_auth_token": "same_token"}, {}, asyncio.Queue()
-        )
+        a = WppPlatformAdapter({"id": "wpp-a", "wpp_auth_token": "same_token"}, {}, asyncio.Queue())
+        b = WppPlatformAdapter({"id": "wpp-b", "wpp_auth_token": "same_token"}, {}, asyncio.Queue())
         fp = authcode_fingerprint("same_token")
         WppPlatformAdapter._ACTIVE_AUTHCODES[fp] = a.instance_id
         try:
@@ -179,10 +177,12 @@ class TestWppAccountIsolation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with patch.object(storage, "plugin_data_dir", return_value=Path(d)):
                 acct = WppAccount(FakePlatform(), "wpp_jw", "tok", "http://x:1", "")
-                acct.store.save_config({
-                    "allow_users": [],
-                    "join_welcome": {"enabled": True, "mode": "whitelist"},
-                })
+                acct.store.save_config(
+                    {
+                        "allow_users": [],
+                        "join_welcome": {"enabled": True, "mode": "whitelist"},
+                    }
+                )
                 acct._load_policy_file()
                 acct.block_users.add("wxid_bad")
                 acct.save_policy()

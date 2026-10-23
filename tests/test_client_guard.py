@@ -41,9 +41,7 @@ class TestGroupProfile(unittest.IsolatedAsyncioTestCase):
                 }
             },
         }
-        with patch.object(
-            client, "_post", AsyncMock(side_effect=[info, members])
-        ) as post:
+        with patch.object(client, "_post", AsyncMock(side_effect=[info, members])) as post:
             profile = await client.get_group_profile("9@chatroom")
             self.assertEqual(profile["name"], "调试群")
             self.assertEqual(profile["owner"], "wxid_owner")
@@ -59,9 +57,7 @@ class TestGroupProfile(unittest.IsolatedAsyncioTestCase):
         members = {
             "Code": 0,
             "Data": {
-                "NewChatroomData": {
-                    "ChatRoomMember": [{"UserName": "wxid_a", "NickName": "张三"}]
-                }
+                "NewChatroomData": {"ChatRoomMember": [{"UserName": "wxid_a", "NickName": "张三"}]}
             },
         }
         with patch.object(client, "_post", AsyncMock(side_effect=[info, members])):
@@ -72,9 +68,7 @@ class TestGroupProfile(unittest.IsolatedAsyncioTestCase):
 
     async def test_prefetch_failure_is_negative_cached(self):
         client = self._client()
-        with patch.object(
-            client, "_post", AsyncMock(side_effect=RuntimeError("boom"))
-        ) as post:
+        with patch.object(client, "_post", AsyncMock(side_effect=RuntimeError("boom"))) as post:
             profile = await client.get_group_profile("9@chatroom")
             self.assertEqual(profile["name"], "")
             self.assertEqual(profile["members"], {})
@@ -113,15 +107,15 @@ class TestGroupSnapshot(unittest.IsolatedAsyncioTestCase):
 
     async def test_snapshot_filters_non_humans_and_skips_cache(self):
         client = self._client()
-        members = self._members([
-            {"UserName": "wxid_a", "NickName": "张三"},
-            {"UserName": "123@chatroom", "NickName": "别的群"},
-            {"UserName": "gh_news", "NickName": "公众号"},
-            {"UserName": "weixin", "NickName": "微信团队"},
-        ])
-        with patch.object(
-            client, "_post", AsyncMock(side_effect=[self._info(), members])
-        ) as post:
+        members = self._members(
+            [
+                {"UserName": "wxid_a", "NickName": "张三"},
+                {"UserName": "123@chatroom", "NickName": "别的群"},
+                {"UserName": "gh_news", "NickName": "公众号"},
+                {"UserName": "weixin", "NickName": "微信团队"},
+            ]
+        )
+        with patch.object(client, "_post", AsyncMock(side_effect=[self._info(), members])) as post:
             snap = await client.fetch_group_snapshot("9@chatroom")
         self.assertEqual(snap["name"], "调试群")
         self.assertEqual(snap["members"], {"wxid_a": "张三"})
@@ -129,9 +123,7 @@ class TestGroupSnapshot(unittest.IsolatedAsyncioTestCase):
         # 不写 30 分钟群资料缓存
         self.assertEqual(client._group_cache, {})
         # 第二次仍强拉, 不复用缓存
-        with patch.object(
-            client, "_post", AsyncMock(side_effect=[self._info(), members])
-        ) as post2:
+        with patch.object(client, "_post", AsyncMock(side_effect=[self._info(), members])) as post2:
             await client.fetch_group_snapshot("9@chatroom")
         self.assertEqual(post2.await_count, 2)
         self.assertEqual(post.await_count, 2)
@@ -159,9 +151,7 @@ class TestGroupSnapshot(unittest.IsolatedAsyncioTestCase):
 
 class TestOutboundGuard(unittest.IsolatedAsyncioTestCase):
     async def test_send_interval_serializes_same_session(self):
-        client = client_mod.WppClient(
-            "http://127.0.0.1:18062", "token", send_interval=0.05
-        )
+        client = client_mod.WppClient("http://127.0.0.1:18062", "token", send_interval=0.05)
         calls = []
 
         async def fake_post(endpoint, body, *a, **k):
@@ -180,9 +170,7 @@ class TestOutboundGuard(unittest.IsolatedAsyncioTestCase):
 
     async def test_send_failure_recorded(self):
         client = client_mod.WppClient("http://127.0.0.1:18062", "token")
-        with patch.object(
-            client, "_post_impl", AsyncMock(side_effect=RuntimeError("down"))
-        ):
+        with patch.object(client, "_post_impl", AsyncMock(side_effect=RuntimeError("down"))):
             with self.assertRaises(RuntimeError):
                 await client.send_text("wxid_a", "你好")
         self.assertEqual(client.send_stats["failed"], 1)
@@ -219,7 +207,9 @@ class TestOutboundGuard(unittest.IsolatedAsyncioTestCase):
         with patch.object(client, "_post_impl", fake_post):
             for _ in range(3):
                 await client.send_text(
-                    "9@chatroom", "欢迎 @张三 加入本群！", ["wxid_a"],
+                    "9@chatroom",
+                    "欢迎 @张三 加入本群！",
+                    ["wxid_a"],
                     bypass_repeat_guard=True,
                 )
         self.assertEqual(len(bodies), 3)

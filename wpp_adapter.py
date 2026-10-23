@@ -41,7 +41,13 @@ from astrbot.api.platform import (
 # 局部修复: 在插件加载时把相关 logger 压到 WARNING (只影响第三方库, 不影响 AstrBot/插件自身 logger)。
 import logging as _logging
 
-for _noisy in ("websockets", "websockets.client", "websockets.protocol", "httpcore", "httpcore._trace"):
+for _noisy in (
+    "websockets",
+    "websockets.client",
+    "websockets.protocol",
+    "httpcore",
+    "httpcore._trace",
+):
     _logging.getLogger(_noisy).setLevel(_logging.WARNING)
 
 from astrbot.core.platform.message_session import MessageSession
@@ -165,7 +171,7 @@ WPP_CONFIG_METADATA = {
     "wpp_heartflow_whitelist_mode": {
         "description": "Heartflow 白名单来源",
         "type": "string",
-        "hint": 'auto=参考 WPP 群白名单 (默认); custom=用下方 wpp_heartflow_groups 单独设置。custom 中的群必须在群白名单 (allow_users 的 @chatroom) 中, 否则会被拒绝并告警。',
+        "hint": "auto=参考 WPP 群白名单 (默认); custom=用下方 wpp_heartflow_groups 单独设置。custom 中的群必须在群白名单 (allow_users 的 @chatroom) 中, 否则会被拒绝并告警。",
     },
     "wpp_heartflow_groups": {
         "description": "单独设置的 Heartflow 群白名单 (custom 模式)",
@@ -215,6 +221,7 @@ WPP_CONFIG_METADATA = {
     "个人微信（Pad协议）适配器 (WeChatPadPro)",
     adapter_display_name=PLATFORM_NAME,
     logo_path="logo.png",
+    support_streaming_message=False,
     default_config_tmpl={
         "wpp_base_url": "http://127.0.0.1:18062",
         "wpp_auth_token": "",
@@ -242,6 +249,7 @@ class WppPlatformAdapter(Platform):
     账号级职责 (WppAccount): WS/队列/消息处理/白名单/filehelper/去重。
     多账号 = 多个平台实例 (id 唯一, 各自 authcode)。
     """
+
     #: authcode 指纹 → 持有它的实例 id；同一 authcode 只允许一个实例轮询。
     _ACTIVE_AUTHCODES: dict[str, str] = {}
 
@@ -256,34 +264,30 @@ class WppPlatformAdapter(Platform):
         self.settings = platform_settings
 
         # 实例标识 (平台级, AstrBot 会话路由用)
-        self.instance_id = str(
-            platform_config.get("id", PLATFORM_NAME) or PLATFORM_NAME
-        )
+        self.instance_id = str(platform_config.get("id", PLATFORM_NAME) or PLATFORM_NAME)
 
-        self.base_url = str(platform_config.get("wpp_base_url", "http://127.0.0.1:18062")).rstrip("/")
+        self.base_url = str(platform_config.get("wpp_base_url", "http://127.0.0.1:18062")).rstrip(
+            "/"
+        )
         self.ws_url = str(platform_config.get("wpp_ws_url", "") or "").strip()
         self.webhook_enabled = _as_bool(platform_config.get("wpp_webhook_enabled"), False)
         # 群白名单自动同步到 Heartflow 的 chat_whitelist (可选集成, 默认开)
         self.heartflow_sync_enabled = _as_bool(
             platform_config.get("wpp_sync_heartflow_whitelist"), True
         )
-        hf_mode = str(
-            platform_config.get("wpp_heartflow_whitelist_mode", "auto") or "auto"
-        ).strip().lower()
+        hf_mode = (
+            str(platform_config.get("wpp_heartflow_whitelist_mode", "auto") or "auto")
+            .strip()
+            .lower()
+        )
         if hf_mode not in HEARTFLOW_WHITELIST_MODES:
-            logger.warning(
-                f"[WPP] 未知 Heartflow 白名单模式 {hf_mode!r}, 回退 auto"
-            )
+            logger.warning(f"[WPP] 未知 Heartflow 白名单模式 {hf_mode!r}, 回退 auto")
             hf_mode = "auto"
         self.heartflow_whitelist_mode = hf_mode
-        self.heartflow_groups = _as_csv(
-            platform_config.get("wpp_heartflow_groups", "")
-        )
+        self.heartflow_groups = _as_csv(platform_config.get("wpp_heartflow_groups", ""))
         self._heartflow_rejected_warned: set[str] = set()
         self.lazy_media = _as_bool(platform_config.get("wpp_lazy_media"), True)
-        self.send_interval_ms = max(
-            0, _as_int(platform_config.get("wpp_send_interval_ms"), 300)
-        )
+        self.send_interval_ms = max(0, _as_int(platform_config.get("wpp_send_interval_ms"), 300))
         self.outbound_repeat_guard = _as_bool(
             platform_config.get("wpp_outbound_repeat_guard"), True
         )
@@ -328,9 +332,7 @@ class WppPlatformAdapter(Platform):
                 lazy_media=self.lazy_media,
                 send_interval_ms=self.send_interval_ms,
                 repeat_guard_window=(
-                    float(self.outbound_repeat_window)
-                    if self.outbound_repeat_guard
-                    else 0.0
+                    float(self.outbound_repeat_window) if self.outbound_repeat_guard else 0.0
                 ),
                 repeat_guard_limit=self.outbound_repeat_limit,
             )
@@ -349,7 +351,9 @@ class WppPlatformAdapter(Platform):
         self.webhook_secret = str(platform_config.get("webhook_secret", "") or "").strip()
         self.webhook_host = str(platform_config.get("webhook_host", "0.0.0.0"))
         self.webhook_port = int(platform_config.get("webhook_port", 6199))
-        self.webhook_public_url = str(platform_config.get("webhook_public_url", "") or "").rstrip("/")
+        self.webhook_public_url = str(platform_config.get("webhook_public_url", "") or "").rstrip(
+            "/"
+        )
 
         self._runner = None
         self._server = None
@@ -445,9 +449,8 @@ class WppPlatformAdapter(Platform):
                     f"allow_users 群白名单, 已跳过同步: {', '.join(sorted(rejected))}。"
                     "请先 /group add 或从 Heartflow 单独白名单移除。"
                 )
-            if (
-                not self._heartflow_all_warned
-                and any(getattr(a, "group_reply", "") == "all" for a in self.accounts)
+            if not self._heartflow_all_warned and any(
+                getattr(a, "group_reply", "") == "all" for a in self.accounts
             ):
                 self._heartflow_all_warned = True
                 logger.warning(
@@ -486,7 +489,9 @@ class WppPlatformAdapter(Platform):
                 callback_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
             api = self.accounts[0]._api
             ok = await api.set_webhook(callback_url)
-            logger.info(f"[WPP] register webhook to vendor: {'OK' if ok else 'FAILED'} url={callback_url}")
+            logger.info(
+                f"[WPP] register webhook to vendor: {'OK' if ok else 'FAILED'} url={callback_url}"
+            )
             biz = await api.set_business_webhook(callback_url)
             sync = await api.start_auto_sync(callback_url)
             logger.info(f"[WPP] business webhook: {biz} | auto-sync: {sync}")
@@ -543,7 +548,11 @@ class WppPlatformAdapter(Platform):
                 if prof and prof.get("Success") is not False:
                     ui = (prof.get("Data") or {}).get("userInfo") or {}
                     nv = ui.get("NickName")
-                    nickname = str(nv.get("string", "")) if isinstance(nv, dict) else (str(nv) if nv else "")
+                    nickname = (
+                        str(nv.get("string", ""))
+                        if isinstance(nv, dict)
+                        else (str(nv) if nv else "")
+                    )
                 if nickname:
                     acct._self_nickname = nickname
                 acct._account_status = {
@@ -675,10 +684,12 @@ class WppPlatformAdapter(Platform):
         for prefix, a in (("sha256=", "sha256"), ("sha1=", "sha1"), ("md5=", "md5")):
             if signature.startswith(prefix):
                 algo = a
-                sig_value = signature[len(prefix):]
+                sig_value = signature[len(prefix) :]
                 break
         try:
-            computed = hmac.new(secret.encode(), raw_body.encode(), getattr(hashlib, algo)).hexdigest()
+            computed = hmac.new(
+                secret.encode(), raw_body.encode(), getattr(hashlib, algo)
+            ).hexdigest()
             return hmac.compare_digest(computed, sig_value)
         except Exception:  # noqa: BLE001
             return False
@@ -688,9 +699,7 @@ class WppPlatformAdapter(Platform):
         """单实例单账号：所有会话都由当前账号发送。"""
         return self.account
 
-    async def send_by_session(
-        self, session: MessageSession, message_chain: MessageChain
-    ) -> None:
+    async def send_by_session(self, session: MessageSession, message_chain: MessageChain) -> None:
         """AstrBot 回复/主动推送统一走这里 → 对应账号的 WPP 发送。"""
         try:
             acct = self._find_account_for_send(session)

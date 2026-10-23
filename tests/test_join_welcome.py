@@ -76,9 +76,7 @@ class TestShouldWelcome(unittest.TestCase):
 
     def test_blacklisted_group_never(self):
         c = cfg(enabled=True, mode="all")
-        self.assertFalse(
-            jw.should_welcome(c, ROOM, blacklisted_groups=[ROOM])
-        )
+        self.assertFalse(jw.should_welcome(c, ROOM, blacklisted_groups=[ROOM]))
 
 
 class TestBuild(unittest.TestCase):
@@ -102,12 +100,8 @@ class TestBuild(unittest.TestCase):
 
     def test_quiet_hour(self):
         c = cfg(enabled=True, mode="all", quietHours=[23])
-        self.assertIsNone(
-            jw.build(c, ROOM, [("wxid_a", "张三")], hour=23, group_name="群")
-        )
-        self.assertIsNotNone(
-            jw.build(c, ROOM, [("wxid_a", "张三")], hour=22, group_name="群")
-        )
+        self.assertIsNone(jw.build(c, ROOM, [("wxid_a", "张三")], hour=23, group_name="群"))
+        self.assertIsNotNone(jw.build(c, ROOM, [("wxid_a", "张三")], hour=22, group_name="群"))
 
     def test_max_batch(self):
         c = cfg(enabled=True, mode="all", maxBatch=2)

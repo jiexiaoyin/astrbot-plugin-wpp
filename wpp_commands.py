@@ -22,9 +22,7 @@ if TYPE_CHECKING:
 def plugin_version() -> str:
     """从 metadata.yaml 读取版本, 避免 /help 里硬编码版本号。"""
     try:
-        text = (Path(__file__).resolve().parent / "metadata.yaml").read_text(
-            encoding="utf-8"
-        )
+        text = (Path(__file__).resolve().parent / "metadata.yaml").read_text(encoding="utf-8")
     except OSError:
         return "dev"
     for line in text.splitlines():
@@ -63,7 +61,9 @@ class FilehelperCommands:
                 try:
                     await handler(args, reply)
                 except Exception as e:  # noqa: BLE001
-                    logger.warning(f"[WPP:{self.account.account_id} FILEHELPER] 命令 {cmd} 失败: {e}")
+                    logger.warning(
+                        f"[WPP:{self.account.account_id} FILEHELPER] 命令 {cmd} 失败: {e}"
+                    )
                     await reply(f"命令 {cmd} 执行失败: {e}")
                 return
         await reply(f"未知命令: {cmd}\n用 /help 查看全部命令。")
@@ -98,7 +98,9 @@ class FilehelperCommands:
             msg = f"✅ 已移除私聊白名单: {', '.join(removed) or '(无)'}"
             if missing:
                 msg += f"\n⚠️ 不在白名单: {', '.join(missing)}"
-            msg += f"\n当前 ({len(acct.allow_users)}): {', '.join(sorted(acct.allow_users)) or '(空)'}"
+            msg += (
+                f"\n当前 ({len(acct.allow_users)}): {', '.join(sorted(acct.allow_users)) or '(空)'}"
+            )
             await reply(msg)
             return
         await reply("用法: /user add <wxid> [wxid...] | /user del <wxid> [wxid...] | /user list")
@@ -124,7 +126,9 @@ class FilehelperCommands:
                     acct.allow_users.discard(t)
                     removed_from_wl.append(t)
             acct.save_policy()
-            note = f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
+            note = (
+                f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
+            )
             await reply(
                 f"✅ 已加入私聊黑名单: {', '.join(added) or '(均已存在)'}{note}\n"
                 f"当前 ({len(acct.block_users)}): {', '.join(sorted(acct.block_users))}"
@@ -139,7 +143,9 @@ class FilehelperCommands:
             msg = f"✅ 已移出私聊黑名单: {', '.join(removed) or '(无)'}"
             if missing:
                 msg += f"\n⚠️ 不在黑名单: {', '.join(missing)}"
-            msg += f"\n当前 ({len(acct.block_users)}): {', '.join(sorted(acct.block_users)) or '(空)'}"
+            msg += (
+                f"\n当前 ({len(acct.block_users)}): {', '.join(sorted(acct.block_users)) or '(空)'}"
+            )
             await reply(msg)
             return
         await reply("用法: /block add <wxid> [wxid...] | /block del <wxid> [wxid...] | /block list")
@@ -196,7 +202,9 @@ class FilehelperCommands:
                     acct.allow_users.discard(t)
                     removed_from_wl.append(t)
             acct.save_policy()
-            note = f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
+            note = (
+                f"\n(已自动从白名单移除: {', '.join(removed_from_wl)})" if removed_from_wl else ""
+            )
             await reply(
                 f"✅ 已加入黑名单群: {', '.join(targets)}{note}\n"
                 f"当前黑名单 ({len(acct.blacklist_groups)}): {', '.join(sorted(acct.blacklist_groups)) or '(空)'}"
@@ -215,7 +223,11 @@ class FilehelperCommands:
         elif action == "list":
             await reply(
                 f"当前黑名单群 ({len(acct.blacklist_groups)}):\n"
-                + ("\n".join(f"- {g}" for g in sorted(acct.blacklist_groups)) if acct.blacklist_groups else "(空)")
+                + (
+                    "\n".join(f"- {g}" for g in sorted(acct.blacklist_groups))
+                    if acct.blacklist_groups
+                    else "(空)"
+                )
             )
         else:
             await reply("用法: /blacklist add <群ID> [群ID...] | del <群ID> [群ID...] | list")
@@ -230,9 +242,7 @@ class FilehelperCommands:
             pid = str(getattr(acct.platform, "instance_id", "") or PLATFORM_NAME)
             return f"{pid}:GroupMessage:{group_id}"
 
-        auto_groups = sorted(
-            str(u) for u in acct.allow_users if str(u).endswith("@chatroom")
-        )
+        auto_groups = sorted(str(u) for u in acct.allow_users if str(u).endswith("@chatroom"))
         if action == "list" or (action == "" and not targets):
             explicit = sorted(acct.proactive_groups)
             effective = sorted(set(explicit) | set(auto_groups))
@@ -257,28 +267,14 @@ class FilehelperCommands:
             return
 
         if action == "add" and targets:
-            added = [
-                t
-                for t in targets
-                if t not in acct.proactive_groups and t not in auto_groups
-            ]
-            already = [
-                t
-                for t in targets
-                if t in acct.proactive_groups or t in auto_groups
-            ]
-            acct.proactive_groups.update(
-                t for t in targets if t not in auto_groups
-            )
+            added = [t for t in targets if t not in acct.proactive_groups and t not in auto_groups]
+            already = [t for t in targets if t in acct.proactive_groups or t in auto_groups]
+            acct.proactive_groups.update(t for t in targets if t not in auto_groups)
             acct.save_policy()
             msg = f"✅ 已加入主动回复候选群: {', '.join(added) or '(无新增)'}"
             if already:
                 msg += f"\nℹ️ 已在候选中 (含白名单自动纳入): {', '.join(already)}"
-            blocked = (
-                [t for t in targets if t not in auto_groups]
-                if auto_groups
-                else []
-            )
+            blocked = [t for t in targets if t not in auto_groups] if auto_groups else []
             if blocked:
                 msg += (
                     f"\n⚠️ 群白名单已启用, 以下群未进白名单, 显式加入也不会放行: "

@@ -402,9 +402,7 @@ class WppAccount:
         if is_group:
             group_profile = await self._prefetch_group_profile(chatroom_id)
             if group_profile:
-                sender_nickname = str(
-                    (group_profile.get("members") or {}).get(from_wxid) or ""
-                )
+                sender_nickname = str((group_profile.get("members") or {}).get(from_wxid) or "")
         else:
             sender_nickname = await self._prefetch_sender_nickname(from_wxid, src)
 
@@ -519,14 +517,16 @@ class WppAccount:
             data = self.store.load_config()
             if not isinstance(data, dict):
                 data = {}
-            data.update({
-                "allow_users": sorted(self.allow_users),
-                "group_reply": self.group_reply,
-                "blacklist_groups": sorted(self.blacklist_groups),
-                "block_users": sorted(self.block_users),
-                "require_at_mention": self.require_at_mention,
-                "proactive_groups": sorted(self.proactive_groups),
-            })
+            data.update(
+                {
+                    "allow_users": sorted(self.allow_users),
+                    "group_reply": self.group_reply,
+                    "blacklist_groups": sorted(self.blacklist_groups),
+                    "block_users": sorted(self.block_users),
+                    "require_at_mention": self.require_at_mention,
+                    "proactive_groups": sorted(self.proactive_groups),
+                }
+            )
             self.store.save_config(data)
             self._whitelist_mtime = self.store.config_mtime()
             logger.info(f"[WPP:{self.account_id}] 运行时配置已持久化 → {self.store.config_path}")
@@ -561,13 +561,17 @@ class WppAccount:
         if mode == MODE_WHITELIST:
             return sorted(whitelist - blacklisted)
         if mode == MODE_ALL:
-            known = whitelist | set(self.proactive_groups) | set(
-                self._members_state.get("chatrooms") or {}
+            known = (
+                whitelist
+                | set(self.proactive_groups)
+                | set(self._members_state.get("chatrooms") or {})
             )
             return sorted(known - blacklisted)
         if mode == MODE_BLOCKLIST:
-            known = whitelist | set(self.proactive_groups) | set(
-                self._members_state.get("chatrooms") or {}
+            known = (
+                whitelist
+                | set(self.proactive_groups)
+                | set(self._members_state.get("chatrooms") or {})
             )
             return sorted(known - set(cfg["groups"]) - blacklisted)
         return sorted(set(cfg["groups"]) - blacklisted)
@@ -644,9 +648,7 @@ class WppAccount:
                 )
                 return
             self._welcome_last_check[chatroom_id] = now
-            self._spawn_welcome_task(
-                self._run_join_diff(chatroom_id), f"diff:{chatroom_id}"
-            )
+            self._spawn_welcome_task(self._run_join_diff(chatroom_id), f"diff:{chatroom_id}")
         except Exception as e:  # noqa: BLE001 - 通知解析失败不能拖累收信
             logger.warning(f"[WPP:{self.account_id}] 成员变动通知处理失败: {e}")
 
@@ -679,14 +681,10 @@ class WppAccount:
         for chatroom_id in self.join_welcome_groups():
             if only_missing and (chatrooms.get(chatroom_id) or {}).get("members"):
                 continue
-            self._spawn_welcome_task(
-                self._run_join_diff(chatroom_id), f"baseline:{chatroom_id}"
-            )
+            self._spawn_welcome_task(self._run_join_diff(chatroom_id), f"baseline:{chatroom_id}")
             scheduled += 1
         if scheduled:
-            logger.info(
-                f"[WPP:{self.account_id}] 进群欢迎预建基线 ({reason}): {scheduled} 群"
-            )
+            logger.info(f"[WPP:{self.account_id}] 进群欢迎预建基线 ({reason}): {scheduled} 群")
 
     async def _run_join_diff(self, chatroom_id: str) -> None:
         """强拉成员表 → 与基线 diff → 先落盘再发欢迎语。"""
@@ -780,9 +778,7 @@ class WppAccount:
             self.store.save_members(self._members_state)
             return True
         except Exception as e:  # noqa: BLE001 - 落盘失败 ⇒ 本次不发欢迎
-            logger.warning(
-                f"[WPP:{self.account_id}] 保存群成员基线失败 group={chatroom_id}: {e}"
-            )
+            logger.warning(f"[WPP:{self.account_id}] 保存群成员基线失败 group={chatroom_id}: {e}")
             if previous is None:
                 chatrooms.pop(chatroom_id, None)
             else:
@@ -798,14 +794,10 @@ class WppAccount:
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 - 欢迎语失败不影响收信
-            logger.warning(
-                f"[WPP:{self.account_id}] 进群欢迎语发送失败 group={chatroom_id}: {e}"
-            )
+            logger.warning(f"[WPP:{self.account_id}] 进群欢迎语发送失败 group={chatroom_id}: {e}")
             return
         if resp.get("Skipped"):
-            logger.warning(
-                f"[WPP:{self.account_id}] 进群欢迎语被跳过 group={chatroom_id}: {resp}"
-            )
+            logger.warning(f"[WPP:{self.account_id}] 进群欢迎语被跳过 group={chatroom_id}: {resp}")
             return
         logger.info(
             f"[WPP:{self.account_id}] 已发进群欢迎语 group={chatroom_id} "
@@ -871,7 +863,9 @@ class WppAccount:
                     if self._filtered_since_report:
                         parts.append(f"过滤 {self._filtered_since_report} 条 (白名单/群策略)")
                     if self._observe_since_report:
-                        parts.append(f"主动观察放行 {self._observe_since_report} 条 (未@, 由决策插件判断)")
+                        parts.append(
+                            f"主动观察放行 {self._observe_since_report} 条 (未@, 由决策插件判断)"
+                        )
                     if self._ignored_since_report:
                         detail = ", ".join(
                             f"{k}={v}" for k, v in sorted(self._ignored_since_report.items())

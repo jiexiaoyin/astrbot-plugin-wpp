@@ -67,9 +67,7 @@ class AccountStore:
         if data is None:
             legacy = self._read_json(self._legacy_dir / "wpp_whitelist.json")
             if isinstance(legacy, dict):
-                logger.info(
-                    f"[WPP:{self.account_id}] 迁移旧白名单文件 → {self.config_path}"
-                )
+                logger.info(f"[WPP:{self.account_id}] 迁移旧白名单文件 → {self.config_path}")
                 self.save_config(legacy)
                 return legacy
         return data if isinstance(data, dict) else {}

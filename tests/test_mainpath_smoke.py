@@ -551,8 +551,7 @@ class TestMainPathSmoke(unittest.TestCase):
         def current_snapshot(acc, extra=None):
             state = acc.store.members["chatrooms"][room]["members"]
             members = {
-                wxid: (v.get("nick") if isinstance(v, dict) else v)
-                for wxid, v in state.items()
+                wxid: (v.get("nick") if isinstance(v, dict) else v) for wxid, v in state.items()
             }
             members.update(extra or {})
             return {"name": "调试群", "members": members}
@@ -566,9 +565,7 @@ class TestMainPathSmoke(unittest.TestCase):
         )
 
         # 首次只建基线, 不欢迎任何人
-        a = self.new_acc(
-            allow_users=whitelist, welcome={"enabled": True, "mode": "whitelist"}
-        )
+        a = self.new_acc(allow_users=whitelist, welcome={"enabled": True, "mode": "whitelist"})
         a._api.snapshot = {"name": "调试群", "members": {"wxid_a": "张三"}}
         evs = self.run_src_with_tasks(a, notice("jw1"))
         check(
@@ -620,8 +617,7 @@ class TestMainPathSmoke(unittest.TestCase):
         self.run_src_with_tasks(a, notice("jw5"))
         check(
             "maxBatch updates baseline without send",
-            len(a._api.texts) == 1
-            and len(a.store.members["chatrooms"][room]["members"]) == 6,
+            len(a._api.texts) == 1 and len(a.store.members["chatrooms"][room]["members"]) == 6,
         )
 
         # 快照没有群名时沿用基线里记住的群名 (比「本群」更有信息量)
@@ -669,8 +665,7 @@ class TestMainPathSmoke(unittest.TestCase):
         self.run_src_with_tasks(a, notice("jw8"))
         check(
             "quiet hour advances baseline silently",
-            len(a._api.texts) == 3
-            and "wxid_q" in a.store.members["chatrooms"][room]["members"],
+            len(a._api.texts) == 3 and "wxid_q" in a.store.members["chatrooms"][room]["members"],
         )
 
         failed = [name for name, ok in cases if not ok]

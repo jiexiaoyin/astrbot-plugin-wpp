@@ -25,9 +25,7 @@ MAX_FILE_BYTES = 200 * 1024 * 1024
 
 def _temp_path(prefix: str, ext: str) -> str:
     ext = ext if ext.startswith(".") else (f".{ext}" if ext else "")
-    return os.path.join(
-        get_astrbot_temp_path(), f"wpp_{prefix}_{uuid.uuid4().hex[:10]}{ext}"
-    )
+    return os.path.join(get_astrbot_temp_path(), f"wpp_{prefix}_{uuid.uuid4().hex[:10]}{ext}")
 
 
 def _safe_ext(filename: str) -> str:
@@ -52,9 +50,7 @@ def _skill_hint(ext: str) -> str:
 def _non_media_prefix(msg: AstrBotMessage) -> list[Any]:
     """保留 Reply/At 等非媒体组件 (媒体组件和占位 Plain 会被重建)。"""
     return [
-        c
-        for c in (msg.message or [])
-        if not isinstance(c, (Plain, Image, File, Video, Record))
+        c for c in (msg.message or []) if not isinstance(c, (Plain, Image, File, Video, Record))
     ]
 
 
@@ -75,9 +71,7 @@ async def enrich_media(
     temp_files: list[str] = []
 
     def _want(kind: str) -> bool:
-        return (include is None or kind in include) and (
-            exclude is None or kind not in exclude
-        )
+        return (include is None or kind in include) and (exclude is None or kind not in exclude)
 
     image_meta = getattr(msg, "_wpp_image_meta", None)
     if image_meta and _want("image"):

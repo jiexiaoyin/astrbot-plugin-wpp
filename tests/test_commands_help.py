@@ -80,9 +80,7 @@ class TestHelp(unittest.IsolatedAsyncioTestCase):
         self.assertIn("生效 0 个", text)
 
     async def test_help_blacklisted_group_not_effective(self):
-        text = await self._help(
-            "/help", make_account(blacklist_groups={"g1@chatroom"})
-        )
+        text = await self._help("/help", make_account(blacklist_groups={"g1@chatroom"}))
         self.assertIn("生效 1 个", text)
 
     async def test_help_documents_new_versions_semantics(self):

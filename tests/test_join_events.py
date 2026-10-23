@@ -24,9 +24,7 @@ def src(content="", *, msg_type=None, chatroom=ROOM, **extra):
 
 class TestJoinEvents(unittest.TestCase):
     def test_placeholder_10000_means_members_changed(self):
-        notice = join_events.parse_notice(
-            src("收到一条微信系统通知", msg_type=10000)
-        )
+        notice = join_events.parse_notice(src("收到一条微信系统通知", msg_type=10000))
         self.assertIsNotNone(notice)
         self.assertEqual(notice.kind, "members_changed")
         self.assertEqual(notice.chatroom_id, ROOM)
@@ -49,9 +47,7 @@ class TestJoinEvents(unittest.TestCase):
         self.assertEqual(notice.member_name, "李四")
 
     def test_qrcode_text(self):
-        notice = join_events.parse_notice(
-            src('"李四"通过扫描"张三"分享的二维码加入群聊')
-        )
+        notice = join_events.parse_notice(src('"李四"通过扫描"张三"分享的二维码加入群聊'))
         self.assertIsNotNone(notice)
         self.assertEqual(notice.kind, "join")
         self.assertEqual(notice.member_name, "李四")

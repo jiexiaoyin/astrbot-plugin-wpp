@@ -75,11 +75,7 @@ def effective_proactive_groups(policy: PolicySnapshot) -> set[str]:
     未 @ 观察, 无需再复制到 proactive_groups。显式列表继续保留, 便于
     未配置群白名单时单独 opt-in, 也不破坏历史配置。
     """
-    groups = {
-        str(group).strip()
-        for group in policy.proactive_groups
-        if str(group).strip()
-    }
+    groups = {str(group).strip() for group in policy.proactive_groups if str(group).strip()}
     groups.update(group_whitelist(policy))
     return groups
 
@@ -104,9 +100,7 @@ def classify(
 
         if policy.allow_users:
             group_whitelisted = chatroom_id in policy.allow_users
-            has_group_in_whitelist = any(
-                u.endswith("@chatroom") for u in policy.allow_users
-            )
+            has_group_in_whitelist = any(u.endswith("@chatroom") for u in policy.allow_users)
             if has_group_in_whitelist and not group_whitelisted:
                 return Admission(False, reason="group_whitelist")
 
@@ -119,9 +113,7 @@ def classify(
             safe_str(policy.self_nickname),
             at_list,
         )
-        proactive = bool(chatroom_id) and chatroom_id in effective_proactive_groups(
-            policy
-        )
+        proactive = bool(chatroom_id) and chatroom_id in effective_proactive_groups(policy)
 
         if at_me:
             return Admission(True, at_me=True, proactive=proactive, reason="at_me")

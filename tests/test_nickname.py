@@ -65,9 +65,9 @@ class TestResolveNickname(unittest.IsolatedAsyncioTestCase):
         client = self._client()
         resp = {
             "Code": 0,
-            "Data": {"NewChatroomData": {"ChatRoomMember": [
-                {"UserName": "wxid_a", "NickName": "张三"}
-            ]}},
+            "Data": {
+                "NewChatroomData": {"ChatRoomMember": [{"UserName": "wxid_a", "NickName": "张三"}]}
+            },
         }
         with patch.object(client, "_post", AsyncMock(return_value=resp)) as post:
             self.assertEqual(await client.resolve_nickname("wxid_a", "9@chatroom"), "张三")
@@ -76,9 +76,7 @@ class TestResolveNickname(unittest.IsolatedAsyncioTestCase):
 
     async def test_failure_returns_empty_and_is_negative_cached(self):
         client = self._client()
-        with patch.object(
-            client, "_post", AsyncMock(side_effect=RuntimeError("boom"))
-        ) as post:
+        with patch.object(client, "_post", AsyncMock(side_effect=RuntimeError("boom"))) as post:
             self.assertEqual(await client.resolve_nickname("wxid_x", "9@chatroom"), "")
             self.assertEqual(await client.resolve_nickname("wxid_x", "9@chatroom"), "")
             self.assertEqual(post.await_count, 2)  # 群查询 + 通讯录兜底, 第二次走负缓存

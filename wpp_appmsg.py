@@ -318,7 +318,8 @@ def parse_file_info(root: ET.Element | None) -> dict | None:
                 or find_text(elem, "totallen", "data_len")
             )
             or 0,
-            "ext": safe_str(elem.attrib.get("fileext")) or find_text(elem, "fileext", "file_extension"),
+            "ext": safe_str(elem.attrib.get("fileext"))
+            or find_text(elem, "fileext", "file_extension"),
         }
         if any(info.values()):
             return info
@@ -437,7 +438,9 @@ def parse_appmsg(src: dict) -> dict:
 
     cover = app.get("cover_image") if isinstance(app.get("cover_image"), dict) else {}
     if cover:
-        dc = cover.get("download_context") if isinstance(cover.get("download_context"), dict) else {}
+        dc = (
+            cover.get("download_context") if isinstance(cover.get("download_context"), dict) else {}
+        )
         info["cover_url"] = safe_str(dc.get("url") or cover.get("url"))
 
     xml = app_xml(src)
@@ -498,7 +501,9 @@ def parse_appmsg(src: dict) -> dict:
             content = safe_str(rc.get("quote_content") or rc.get("content"))
             if content:
                 info["quote"] = {
-                    "msg_id": safe_str(rc.get("new_msg_id") or rc.get("svr_id") or rc.get("msg_id")),
+                    "msg_id": safe_str(
+                        rc.get("new_msg_id") or rc.get("svr_id") or rc.get("msg_id")
+                    ),
                     "sender": safe_str(rc.get("from_user_id")),
                     "nickname": safe_str(rc.get("display_name")),
                     "content": clean_text(content, 1024),
@@ -585,7 +590,9 @@ def format_appmsg(src: dict, info: dict | None = None) -> str:
     if cat == "mini_program" or t in (33, 36):
         mp = info.get("mini_program") or {}
         lines = [f"[小程序卡片] {title}" if title else "[小程序卡片]"]
-        who = info.get("source") or info.get("username") or mp.get("source_display_name") or "小程序"
+        who = (
+            info.get("source") or info.get("username") or mp.get("source_display_name") or "小程序"
+        )
         ids = []
         if info.get("appid") or mp.get("app_id"):
             ids.append(f"appid {info.get('appid') or mp.get('app_id')}")

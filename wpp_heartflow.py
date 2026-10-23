@@ -85,9 +85,7 @@ def resolve_heartflow_groups(
     elif normalized in ("auto", "reference", "whitelist", ""):
         target = whitelist | account_proactive_groups(accounts)
     else:
-        logger.warning(
-            f"[WPP] 未知 Heartflow 白名单模式 {mode!r}, 回退 auto (参考群白名单)"
-        )
+        logger.warning(f"[WPP] 未知 Heartflow 白名单模式 {mode!r}, 回退 auto (参考群白名单)")
         target = whitelist | account_proactive_groups(accounts)
 
     rejected: set[str] = set()
@@ -174,9 +172,7 @@ def _update_live_instance(whitelist: list[str]) -> bool:
     return False
 
 
-def sync_heartflow_whitelist(
-    platform_id: str, groups: Iterable[str], reason: str = ""
-) -> dict:
+def sync_heartflow_whitelist(platform_id: str, groups: Iterable[str], reason: str = "") -> dict:
     """把 WPP 群白名单写入 Heartflow 配置并更新运行中实例。
 
     返回 {path, wpp_umos, changed, live}; Heartflow 未安装/未配置时返回
