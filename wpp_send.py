@@ -12,6 +12,7 @@ Reply 引用回复走 appmsg XML (type=57); Share 走链接卡片; Location 走�
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import re
 from typing import Any
@@ -36,6 +37,9 @@ TEXT_CHUNK_LIMIT = 6000
 # 引用回复气泡文本上限 (wpp-openclaw buildQuoteReplyXml 取 500)
 QUOTE_TEXT_LIMIT = 500
 MAX_MEDIA_SEND_BYTES = 100 * 1024 * 1024
+# vendor /Msg/SendVoice 对 Base64 解码后的语音 payload > 64KiB 直接返回
+# Code=-2（实测 64744B 成功 / 65580B 失败，与格式无关）
+VOICE_MAX_BYTES = 64 * 1024
 
 
 # --------------------------------------------------------------------------- 分片
@@ -585,11 +589,87 @@ async def _send_record(
             logger.warning(
                 f"[WPP:{account_id}] 无法获取语音时长, vendor 可能拒发: {path}"
             )
+        # vendor 还对语音 payload > 64KiB 直接返回 Code=-2。统一转微信原生
+        # SILK (按容量自动降码率) 最稳; 不能转时原格式 < 64KiB 才发语音。
+        silk = await _encode_silk_voice(path)
+        if silk is not None:
+            await api.send_voice(
+                to_wxid, silk, fmt_type=4, voice_time_ms=voice_time
+            )
+            return _one_result(True)
+        if len(data) > VOICE_MAX_BYTES:
+            logger.warning(
+                f"[WPP:{account_id}] 语音 {len(data)}B 超过 vendor 64KiB 限制且无法转 "
+                f"SILK, 降级为文件: {path}"
+            )
+            await api.send_file(to_wxid, os.path.basename(path), data)
+            return _one_result(True)
         await api.send_voice(to_wxid, data, fmt_type=fmt, voice_time_ms=voice_time)
         return _one_result(True)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[WPP:{account_id}] send_voice failed: {e}")
         return _one_result(False, f"send_voice: {e}")
+
+
+async def _encode_silk_voice(path: str) -> bytes | None:
+    """转成微信原生 SILK (Tencent 标记), 按容量自动降码率。
+
+    vendor 的 64KiB 上限让 64kbps mp3 只能发 ~8 秒; SILK 同样音量下约
+    1/4 大小。pysilk 或 ffmpeg 不可用时返回 None, 由调用方走原格式兜底。
+    """
+    try:
+        import pysilk
+    except ImportError:
+        return None
+    pcm = await _decode_pcm_24k(path)
+    if not pcm:
+        return None
+    for bit_rate in (24000, 16000, 12000, 8000):
+        out = io.BytesIO()
+        try:
+            pysilk.encode(
+                io.BytesIO(pcm),
+                out,
+                24000,
+                bit_rate,
+                24000,
+                0,
+                2,
+                False,
+                False,
+                True,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        data = out.getvalue()
+        if data and len(data) <= VOICE_MAX_BYTES:
+            return data
+    return None
+
+
+async def _decode_pcm_24k(path: str) -> bytes:
+    """用 ffmpeg 解码成 24kHz 单声道 s16le PCM。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-v",
+            "error",
+            "-i",
+            path,
+            "-f",
+            "s16le",
+            "-ac",
+            "1",
+            "-ar",
+            "24000",
+            "-",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        return stdout if proc.returncode == 0 else b""
+    except Exception:  # noqa: BLE001
+        return b""
 
 
 async def _audio_duration_ms(path: str, ext: str) -> int:

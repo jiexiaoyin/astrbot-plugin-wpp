@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.11.2 (2026-10-23) — 语音统一转 SILK，绕开 64KiB 上限
+
+### 修复
+- 实测 vendor `/Msg/SendVoice` 还有第二个硬限制：Base64 解码后的语音
+  **payload > 64KiB 直接返回 `Code=-2`**（64744B 成功 / 65580B 失败，
+  与 mp3/silk 格式无关，30 秒 SILK 同样被拒）。64kbps mp3 只能发约 8 秒，
+  TTS 稍长的回复就会静默丢失。
+- 现在出站语音统一转微信原生 **SILK**（`pysilk`，Tencent 标记），并按容量
+  自动降码率 24k→16k→12k→8k，保证 payload ≤ 64KiB。
+- pysilk/ffmpeg 不可用或超长仍超限时，降级为**文件发送**并打 WARNING，
+  不再静默丢回复。
+
 ## v0.11.1 (2026-10-23) — 修复发语音失败 (Code=-2)
 
 ### 修复
@@ -8,6 +20,8 @@
   （LLM 与 TTS 均成功，仅最后一段语音发不出去）。
 - 现在统一取真实时长：ffprobe → wav 头 / 纯 Python MP3 帧解析兜底；
   取不到时长会打 WARNING 再尝试发送。
+- 注：主链路里 AstrBot `Record.convert_to_file_path()` 会把 TTS 音频转成 WAV，
+  实际故障是 WAV payload 超 64KiB，本版未解决，见 v0.11.2。
 
 ## v0.11.0 (2026-10-22) — 显示名改为「个人微信（Pad协议）」
 
